@@ -4,8 +4,9 @@ import time
 
 import pytest
 from fakes import FakePty, FakeSpawner, wait_for
+from winpty import WinptyError
 
-from hq.sessions import SessionError, SessionManager
+from hq.sessions import ConPty, SessionError, SessionManager
 
 SID = "a" * 32
 SID2 = "b" * 32
@@ -332,3 +333,78 @@ def test_close_logs_a_failed_write_and_still_kills_and_releases(caplog):
     assert ptys[0].terminated
     assert ptys[0].closed
     assert _warnings(caplog)
+
+
+# ---- 첫 exit이 버려져도 강제 종료 전에 한 번 더 친다 (Ruling R12-1) ----
+
+
+class SwallowsFirstExitPty(FakePty):
+    """Ctrl+C 바로 뒤에 온 입력이 버려지듯 첫 'exit\\r'을 흘려 버린다."""
+
+    def write(self, text: str) -> int:
+        if text == "exit\r" and "exit\r" not in self.written:
+            self.written.append(text)
+            return len(text)
+        return super().write(text)
+
+
+def test_close_types_exit_again_at_half_the_timeout_when_the_first_was_swallowed():
+    ptys: list[SwallowsFirstExitPty] = []
+
+    def spawner(argv, rows, cols):
+        ptys.append(SwallowsFirstExitPty())
+        return ptys[-1]
+
+    manager, _, exits = make(spawner)  # close_timeout=0.3
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    start = time.monotonic()
+    manager.close(SID)
+    assert time.monotonic() - start >= 0.2  # Ctrl+C 뒤 0.1초 + close_timeout의 절반을 기다린 뒤에 다시 쳤다
+    assert ptys[0].written == ["\x03", "exit\r", "exit\r"]
+    assert not ptys[0].terminated
+    assert ptys[0].exitstatus == 0
+    assert ptys[0].closed
+    time.sleep(0.1)
+    assert exits == []
+
+
+# ---- ConPty: 살아 있는 동안의 읽기 오류는 늦은 EOF가 아니다 (Ruling R12-1) ----
+
+
+class StubWinpty:
+    """winpty.PTY 대신 ConPty에 넣는다. read()는 늘 WinptyError를 던진다."""
+
+    pid = 0
+
+    def __init__(self, *, alive: bool) -> None:
+        self.alive = alive
+
+    def read(self, blocking: bool = False) -> str:
+        raise WinptyError("read failed")
+
+    def isalive(self) -> bool:
+        return self.alive
+
+    def get_exitstatus(self) -> int | None:
+        return None if self.alive else 0
+
+    def cancel_io(self) -> bool:
+        return True
+
+
+def test_a_conpty_read_error_while_the_shell_runs_is_logged_as_a_warning(caplog):
+    stub = StubWinpty(alive=True)
+    manager, _, exits = make(lambda argv, rows, cols: ConPty(stub))
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    assert wait_for(lambda: _warnings(caplog))
+    stub.alive = False  # 감시 스레드를 끝낸다(close는 부르지 않는다. 가짜 pid를 강제 종료하지 않게)
+    assert wait_for(lambda: exits)
+
+
+def test_conpty_read_reports_eof_once_the_shell_has_ended_or_the_pty_is_closed():
+    with pytest.raises(EOFError):
+        ConPty(StubWinpty(alive=False)).read()  # ConPTY의 늦은 EOF
+    closed = ConPty(StubWinpty(alive=True))
+    closed.close()
+    with pytest.raises(EOFError):
+        closed.read()

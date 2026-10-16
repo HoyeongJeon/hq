@@ -1,5 +1,6 @@
 import ctypes
 import json
+import logging
 import subprocess
 import sys
 import threading
@@ -60,11 +61,15 @@ def pid_alive(pid: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
+def session_warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "hq.sessions" and r.levelno >= logging.WARNING]
+
+
 def reader_running(session_id: str) -> bool:
     return any(t.name == f"hq-read-{session_id[:8]}" for t in threading.enumerate())
 
 
-def test_real_powershell_output_and_exit_code(cleanup):
+def test_real_powershell_output_and_exit_code(cleanup, caplog):
     sid = "1" * 32
     manager, out, exits, _ = make()
     cleanup(manager)
@@ -75,9 +80,10 @@ def test_real_powershell_output_and_exit_code(cleanup):
     assert "안녕 hq" in "".join(out)
     # 읽기 스레드는 ConPTY의 늦은 EOF(끝난 뒤 약 5초)를 받고 스스로 끝난다
     assert wait_for(lambda: not reader_running(sid), timeout=10)
+    assert session_warnings(caplog) == []  # 늦은 EOF는 오류가 아니다
 
 
-def test_interactive_input_then_close_within_the_timeout(cleanup):
+def test_interactive_input_then_close_within_the_timeout(cleanup, caplog):
     manager, out, exits, ptys = make()
     cleanup(manager)
     manager.open(SID, "s", SHELL, 80, 24)
@@ -90,6 +96,7 @@ def test_interactive_input_then_close_within_the_timeout(cleanup):
     assert exits == []  # 닫으려고 끝낸 세션은 보고하지 않는다
     assert not pid_alive(ptys[0].pid)
     assert not reader_running(SID)  # 닫으면서 PTY를 놓아 막혀 있던 읽기도 끝났다
+    assert session_warnings(caplog) == []  # cancel_io로 깨운 읽기는 오류가 아니다
 
 
 def test_close_kills_a_shell_that_ignores_ctrl_c_and_exit(cleanup):

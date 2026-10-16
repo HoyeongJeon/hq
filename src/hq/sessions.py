@@ -75,7 +75,9 @@ class ConPty:
         try:
             return pty.read(blocking=True)
         except WinptyError as exc:
-            raise EOFError(str(exc)) from exc
+            if self._pty is not None and pty.isalive():
+                raise  # 열려 있고 프로세스도 살아 있다: EOF가 아닌 진짜 오류. 읽기 스레드가 warning으로 남긴다
+            raise EOFError(str(exc)) from exc  # 프로세스가 끝난 뒤의 늦은 EOF, 또는 close()의 cancel_io
         finally:
             self._reading = False
 
@@ -314,20 +316,32 @@ class SessionManager:
             self._release(session_id, pty)
 
     def _shut_down(self, session_id: str, pty: PtyLike) -> None:
-        """Ctrl+C → exit → 최대 close_timeout초 → 강제 종료."""
+        """Ctrl+C → exit → close_timeout의 절반에 exit 한 번 더 → close_timeout초가 지나면 강제 종료."""
         if not pty.isalive():
             return
+        self._type(session_id, pty, "\x03")  # 실행 중인 명령을 멈춘다
+        time.sleep(0.1)
+        self._type(session_id, pty, "exit\r")  # 원격에서는 Exit-PSSession, 이어서 안전장치가 세션을 정리하고 끝낸다
+        start = time.monotonic()
+        if self._ended_by(pty, start + self._close_timeout / 2):
+            return
+        # Ctrl+C 바로 뒤에 온 입력은 버려질 수 있어 첫 exit이 사라졌을 수 있다. 강제 종료하면 서버 세션이
+        # 유휴 시간까지 남으므로 한 번 더 친다. 안전장치는 미리 친 입력을 내 PC에서 실행하지 않으니 남아도 된다.
+        self._type(session_id, pty, "exit\r")
+        if not self._ended_by(pty, start + self._close_timeout):
+            pty.terminate(force=True)
+
+    def _type(self, session_id: str, pty: PtyLike, text: str) -> None:
         try:
-            pty.write("\x03")  # 실행 중인 명령을 멈춘다
-            time.sleep(0.1)
-            pty.write("exit\r")  # 원격에서는 Exit-PSSession, 이어서 안전장치가 세션을 정리하고 끝낸다
+            pty.write(text)
         except Exception:
             log.warning("닫기 입력 실패 %s", session_id[:8], exc_info=True)
-        deadline = time.monotonic() + self._close_timeout
+
+    @staticmethod
+    def _ended_by(pty: PtyLike, deadline: float) -> bool:
         while pty.isalive() and time.monotonic() < deadline:
             time.sleep(0.05)
-        if pty.isalive():
-            pty.terminate(force=True)
+        return not pty.isalive()
 
     def _release(self, session_id: str, pty: PtyLike) -> None:
         try:
