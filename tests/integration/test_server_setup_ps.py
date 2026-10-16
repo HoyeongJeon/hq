@@ -15,6 +15,8 @@ def test_setup_script_parses(tmp_path):
 # 스크립트의 출력(Write-Host)과 바꾸는 명령의 호출을 같은 UTF-8 파일에 차례대로 적는다.
 # (Write-Host를 표준 출력으로 받으면 한글이 깨지고, Out-Null로 버리는 호출은 보이지 않는다.)
 FAKES = r"""
+# 원격 세션 안에서 붙여넣은 경우: PowerShell은 원격 세션에서만 $PSSenderInfo를 둔다.
+if ($env:HQ_REMOTE -eq '1') { $global:PSSenderInfo = [pscustomobject]@{ ConnectedUser = 'WEB01\opsadmin' } }
 function Log([string]$line) { [IO.File]::AppendAllText($env:HQ_LOG, "$line`n", [Text.Encoding]::UTF8) }
 function Write-Host { param([string]$Object) Log $Object }
 function Get-Service { [CmdletBinding()] param($Name) [pscustomobject]@{ Name = $Name; Status = $env:HQ_STATUS } }
@@ -63,10 +65,22 @@ function Test-WSMan { [CmdletBinding()] param($ComputerName) Log "CALL Test-WSMa
 """
 
 # 이미 다 설정된 서버: WinRM이 돌고 5985 리스너가 있고, 한도가 충분하고, 계정은 내장 Administrator다.
+# 스크립트는 서버 콘솔(RDP)에 붙여넣었다(원격 세션이 아니다).
 READY = {"HQ_STATUS": "Running", "HQ_LISTENER": "1", "HQ_SHELLS": "2147483647", "HQ_MEMORY": "2147483647",
-         "HQ_SID": "S-1-5-21-1-2-3-500", "HQ_FAIL": ""}
+         "HQ_SID": "S-1-5-21-1-2-3-500", "HQ_FAIL": "", "HQ_REMOTE": ""}
 RESTART = "CALL Restart-Service WinRM"
 CHECK = "CALL Test-WSMan localhost"
+REMOTE_NOTE = ("[HQ] 원격 세션 안에서 실행해서 WinRM을 다시 시작하지 않았습니다. 바뀐 한도는 새 세션부터 적용됩니다. "
+               "적용되지 않으면 서버 콘솔(RDP)에서 Restart-Service WinRM 을 실행하세요.")
+WINRM_CHANGES = pytest.mark.parametrize(
+    ("server", "change"),
+    [
+        ({"HQ_STATUS": "Stopped", "HQ_LISTENER": "0"}, "CALL Enable-PSRemoting"),
+        ({"HQ_SHELLS": "5"}, r"CALL Set-Item WSMan:\localhost\Shell\MaxShellsPerUser 30"),
+        ({"HQ_MEMORY": "150"}, r"CALL Set-Item WSMan:\localhost\Shell\MaxMemoryPerShellMB 1024"),
+    ],
+    ids=["listener", "shells", "memory"],
+)
 
 
 def _run(tmp_path, *, account="Administrator", allow_from=(), **server):
@@ -82,22 +96,32 @@ def _warning_index(lines):
     return next(i for i, line in enumerate(lines) if "[다시 연결]" in line)
 
 
-@pytest.mark.parametrize(
-    ("server", "change"),
-    [
-        ({"HQ_STATUS": "Stopped", "HQ_LISTENER": "0"}, "CALL Enable-PSRemoting"),
-        ({"HQ_SHELLS": "5"}, r"CALL Set-Item WSMan:\localhost\Shell\MaxShellsPerUser 30"),
-        ({"HQ_MEMORY": "150"}, r"CALL Set-Item WSMan:\localhost\Shell\MaxMemoryPerShellMB 1024"),
-    ],
-    ids=["listener", "shells", "memory"],
-)
-def test_winrm_change_warns_then_restarts_winrm_before_the_self_check(tmp_path, server, change):
+@WINRM_CHANGES
+def test_winrm_change_in_the_server_console_warns_then_restarts_winrm_before_the_self_check(tmp_path, server, change):
     lines = _run(tmp_path, **server)
     assert lines.count(RESTART) == 1, lines
+    assert REMOTE_NOTE not in lines, lines
     assert lines.index(change) < _warning_index(lines) < lines.index(RESTART) < lines.index(CHECK), lines
     assert "hq 탭" in lines[_warning_index(lines)]
-    # 한 일 요약은 WinRM을 다시 시작하기 전에 보여 준다. 다시 시작하면 hq 탭은 그 뒤를 받지 못한다.
+    # 한 일 요약은 WinRM을 다시 시작하기 전에 보여 준다.
     assert lines.index("[HQ] 바꾼 것:") < _warning_index(lines), lines
+
+
+@WINRM_CHANGES
+def test_winrm_change_inside_a_remote_session_never_restarts_winrm(tmp_path, server, change):
+    # 원격 세션 안에서 WinRM을 멈추면 시작하기 전에 이 세션이 끝나 WinRM이 멈춘 채로 남을 수 있다(규칙 R11-1).
+    lines = _run(tmp_path, HQ_REMOTE="1", **server)
+    assert RESTART not in lines, lines
+    assert not any("[다시 연결]" in line for line in lines), lines
+    assert lines.index(change) < lines.index("[HQ] 바꾼 것:") < lines.index(REMOTE_NOTE) < lines.index(CHECK), lines
+
+
+def test_remote_session_without_a_winrm_change_prints_no_note(tmp_path):
+    lines = _run(tmp_path, HQ_REMOTE="1")
+    assert RESTART not in lines, lines
+    assert REMOTE_NOTE not in lines, lines
+    assert "[HQ] 바꾼 것 없음. 이미 설정되어 있습니다." in lines, lines
+    assert CHECK in lines, lines
 
 
 @pytest.mark.parametrize(

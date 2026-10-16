@@ -93,7 +93,7 @@
         }
     }
 
-    # 5. 한 일 요약. WinRM을 다시 시작하면 hq 탭은 그 뒤 출력을 받지 못하므로 먼저 보여 준다.
+    # 5. 한 일 요약. WinRM을 다시 시작하면 그 뒤 출력은 이어지지 않을 수 있으므로 먼저 보여 준다.
     if ($done.Count -eq 0) {
         Say '바꾼 것 없음. 이미 설정되어 있습니다.'
     } else {
@@ -101,8 +101,12 @@
         foreach ($item in $done) { Say "  - $item" }
     }
 
-    # 6. WinRM 설정을 바꿨으면 WinRM을 다시 시작하고, 끝으로 스스로 확인
-    if ($winrmChanged) {
+    # 6. WinRM 설정을 바꿨으면 WinRM을 다시 시작하고, 끝으로 스스로 확인.
+    #    원격 세션 안($PSSenderInfo가 있음)에서는 다시 시작하지 않는다. WinRM을 멈춘 뒤 시작하기 전에
+    #    이 세션이 끝나 버리면 WinRM이 멈춘 채로 남아 서버에 원격으로 들어갈 수 없게 된다.
+    if ($winrmChanged -and $PSSenderInfo -ne $null) {
+        Say '원격 세션 안에서 실행해서 WinRM을 다시 시작하지 않았습니다. 바뀐 한도는 새 세션부터 적용됩니다. 적용되지 않으면 서버 콘솔(RDP)에서 Restart-Service WinRM 을 실행하세요.'
+    } elseif ($winrmChanged) {
         Say '바꾼 WinRM 설정을 적용하려고 WinRM을 다시 시작합니다. 지금 이 서버에 열린 원격 세션(이 스크립트를 붙여넣은 hq 탭 포함)은 끊깁니다. 끊긴 탭은 [다시 연결]을 누르세요.'
         try {
             Restart-Service -Name WinRM -Force -ErrorAction Stop
