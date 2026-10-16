@@ -4,12 +4,18 @@
 자식 프로세스가 멈춘다). 감시 스레드는 isalive()로 끝남을 알아채 on_exit에 종료 코드를 넘긴다.
 ConPTY는 프로세스가 끝난 뒤 EOF를 약 5초 늦게 내므로 EOF를 기다리지 않는다(2026-10-16 저수준
 winpty.PTY로 다시 재도 같았다).
+
+준비 신호(spec 7.3): ready_marker를 주면 프로세스마다 출력에서 그 글자를 볼 때까지 탭의 입력을 보내지 않고
+쥐고 있다가, 보면 친 순서대로 보낸다. 부트스트랩은 안전장치를 건 직후에 신호를 내므로, 안전장치가 걸리지 않은
+탭(백신이 본문을 막아 내 PC의 프롬프트가 뜬 탭)에는 입력이 가지 않는다. ready_timeout초 안에 신호가 오지 않으면
+프로세스를 끝내고 NOT_READY_CODE로 보고한다.
 """
 
 import contextlib
 import ctypes
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -18,13 +24,22 @@ import time
 from collections.abc import Callable, Iterable
 from ctypes import wintypes
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Protocol
 
 from winpty import PTY, Backend, WinptyError
 
+from hq.bootstrap import NOT_READY_CODE
 from hq.validation import is_hex_id
 
 log = logging.getLogger(__name__)
+
+HELD_INPUT_LIMIT = 64 * 1024  # 준비 신호 전에 쥐고 있을 입력(글자 수). 넘는 뒷부분은 버린다
+
+# 터미널(xterm.js)이 ConPTY의 질의에 답하는 응답: DA1, DA2, 커서 위치, 장치 상태, 포커스 들어옴/나감.
+# ConPTY는 시작할 때 DA1 답을 기다리므로(답이 없으면 약 3초) 이것까지 쥐고 있으면 신호가 늦게 오거나 오지 않는다.
+# Enter가 없어 명령을 실행할 수 없으므로 신호 전에도 보낸다. 다른 글자가 섞인 입력은 통째로 쥐고 있는다.
+_TERMINAL_REPLIES = re.compile(r"(?:\x1b\[\?[0-9;]*c|\x1b\[>[0-9;]*c|\x1b\[[0-9]+;[0-9]+R|\x1b\[0n|\x1b\[[IO])+")
 
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
@@ -159,15 +174,45 @@ class SessionError(Exception):
     pass
 
 
+class _Gate(Enum):
+    HOLD = "hold"  # 준비 신호를 기다린다. 입력은 쥐고 있고 터미널 응답만 보낸다
+    OPEN = "open"  # 입력을 그대로 보낸다
+    SHUT = "shut"  # 신호 없이 시간이 지나 프로세스를 끝내는 중이다. 입력은 버린다
+
+
+@dataclass
+class _Held:
+    """준비 신호 전에 친 입력. 친 순서대로 모으고, HELD_INPUT_LIMIT를 넘는 뒷부분은 버린다."""
+
+    chunks: list[str] = field(default_factory=list)
+    size: int = 0
+    overflowed: bool = False
+
+    def add(self, data: str) -> bool:
+        """data를 모은다. 이번에 처음으로 넘쳐 버린 글자가 생겼으면 True."""
+        kept = data[: HELD_INPUT_LIMIT - self.size]
+        if kept:
+            self.chunks.append(kept)
+            self.size += len(kept)
+        if len(kept) == len(data) or self.overflowed:
+            return False
+        self.overflowed = True
+        return True
+
+
 @dataclass(eq=False)
 class _Session:
     id: str
     server_id: str
     pty: PtyLike
+    size: tuple[int, int]  # (rows, cols). 다시 연결이 새 프로세스를 이 크기로 띄운다
+    gate: _Gate = _Gate.OPEN
+    held: _Held = field(default_factory=_Held)
     generation: int = 0
     running: bool = True
     closing: bool = False
-    # pty를 쓰는 일(입력, 크기 바꾸기, 다시 연결의 교체, 닫기)을 한 줄로 세운다.
+    # pty를 쓰는 일(입력, 크기 바꾸기, 쥐고 있던 입력 보내기, 다시 연결의 교체, 닫기)을 한 줄로 세우고
+    # gate, held, size를 지킨다. 관리자 잠금(_lock)을 쥔 채 이 잠금을 잡을 수는 있지만 반대로는 잡지 않는다.
     # 이 잠금 안에서 on_output/on_exit를 부르지 않는다(콜백이 write를 부를 수 있다).
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -182,6 +227,8 @@ class SessionManager:
         poll_interval: float = 0.2,
         drain_delay: float = 0.3,
         close_timeout: float = 2.0,
+        ready_marker: str | None = None,
+        ready_timeout: float = 10.0,
     ) -> None:
         self._spawn = spawn
         self._on_output = on_output
@@ -189,6 +236,8 @@ class SessionManager:
         self._poll = poll_interval
         self._drain_delay = drain_delay
         self._close_timeout = close_timeout
+        self._ready_marker = ready_marker  # None이면 신호를 기다리지 않고 입력을 바로 보낸다
+        self._ready_timeout = ready_timeout
         self._sessions: dict[str, _Session] = {}
         self._lock = threading.Lock()
 
@@ -199,10 +248,12 @@ class SessionManager:
             if session_id in self._sessions:
                 raise SessionError("이미 열린 세션입니다.")
         pty = self._spawn(argv, rows, cols)
-        session = _Session(session_id, server_id, pty)
+        started = time.monotonic()
+        gate = _Gate.OPEN if self._ready_marker is None else _Gate.HOLD
+        session = _Session(session_id, server_id, pty, (rows, cols), gate=gate)
         with self._lock:
             self._sessions[session_id] = session
-        self._start(session, 0, pty)
+        self._start(session, 0, pty, started)
 
     def reconnect(self, session_id: str, argv: list[str], cols: int, rows: int) -> None:
         with self._lock:
@@ -214,27 +265,36 @@ class SessionManager:
             session.running = True  # 함께 들어온 다시 연결이 프로세스를 하나 더 띄우지 못하게 먼저 잡는다
             session.generation += 1  # 끝난 프로세스의 늦은 출력은 이제 버린다
             generation = session.generation
+            with session.lock:
+                # 새 프로세스가 자리 잡기 전에 들어온 입력과 크기는 끝난 프로세스로 보내지 않고 새 프로세스 몫으로 둔다
+                session.gate = _Gate.HOLD
+                session.held = _Held()
+                session.size = (rows, cols)
         separator = f"\r\n\x1b[90m── 다시 연결 ({time.strftime('%H:%M:%S')}) ──\x1b[0m\r\n"
         self._notify(self._on_output, session_id, separator)
         with session.lock:
             if session.closing:
                 raise SessionError("닫힌 세션입니다.")
             self._release(session_id, session.pty)  # 끝난 프로세스의 PTY를 놓는다
+            rows, cols = session.size  # 그사이 들어온 크기 바꾸기를 따른다
             try:
                 pty = self._spawn(argv, rows, cols)
             except Exception:
                 session.running = False  # 다시 연결을 다시 누를 수 있게 둔다
                 raise
+            started = time.monotonic()
             session.pty = pty
-        self._start(session, generation, pty)
+            if self._ready_marker is None:
+                self._let_input_through(session)
+        self._start(session, generation, pty, started)
 
-    def _start(self, session: _Session, generation: int, pty: PtyLike) -> None:
+    def _start(self, session: _Session, generation: int, pty: PtyLike, started: float) -> None:
         tag = session.id[:8]
         threading.Thread(
             target=self._read_loop, args=(session, generation, pty), name=f"hq-read-{tag}", daemon=True
         ).start()
         threading.Thread(
-            target=self._watch_loop, args=(session, generation, pty), name=f"hq-watch-{tag}", daemon=True
+            target=self._watch_loop, args=(session, generation, pty, started), name=f"hq-watch-{tag}", daemon=True
         ).start()
 
     def _notify(self, callback: Callable[[str, object], None], session_id: str, value: object) -> None:
@@ -244,6 +304,8 @@ class SessionManager:
             log.warning("화면에 알리지 못함 %s", session_id[:8], exc_info=True)
 
     def _read_loop(self, session: _Session, generation: int, pty: PtyLike) -> None:
+        looking_for = self._ready_marker  # 이 프로세스의 준비 신호를 볼 때까지만 찾는다
+        tail = ""  # 앞 출력의 끝부분. 신호가 두 번에 나뉘어 읽혀도 찾는다
         while True:
             try:
                 data = pty.read(4096)
@@ -252,25 +314,72 @@ class SessionManager:
             except Exception:
                 log.warning("출력 읽기 실패 %s", session.id[:8], exc_info=True)
                 return
-            if data and session.generation == generation and not session.closing:
-                self._notify(self._on_output, session.id, data)
+            if not data:
+                continue
+            if looking_for is not None:
+                seen = tail + data
+                if looking_for in seen:
+                    looking_for = None
+                    self._on_ready(session, generation)
+                else:
+                    tail = seen[max(0, len(seen) - len(looking_for) + 1) :]
+            if session.generation == generation and not session.closing:
+                self._notify(self._on_output, session.id, data)  # 신호도 지우지 않고 그대로 넘긴다
 
-    def _watch_loop(self, session: _Session, generation: int, pty: PtyLike) -> None:
+    def _on_ready(self, session: _Session, generation: int) -> None:
+        with session.lock:
+            if session.generation != generation or session.gate is not _Gate.HOLD:
+                return  # 끝난 프로세스의 늦은 출력이거나, 시간이 지나 이미 문을 닫았다
+            if session.running and not session.closing:
+                self._let_input_through(session)
+
+    def _let_input_through(self, session: _Session) -> None:
+        """쥐고 있던 입력을 친 순서대로 보내고 문을 연다. session.lock을 쥐고 부른다."""
+        held, session.held = session.held, _Held()
+        session.gate = _Gate.OPEN
+        for chunk in held.chunks:
+            self._send(session, chunk)
+
+    def _watch_loop(self, session: _Session, generation: int, pty: PtyLike, started: float) -> None:
+        not_ready = False
         try:
             while pty.isalive():
+                if not not_ready and self._ready_expired(session, started):
+                    not_ready = True
+                    log.warning("준비 신호가 %g초 안에 오지 않아 끝냄 %s", self._ready_timeout, session.id[:8])
+                    pty.terminate(force=True)
+                    continue
                 time.sleep(self._poll)
             time.sleep(self._drain_delay)  # 끝나기 직전 출력을 읽기 스레드가 마저 넘기도록 잠깐 기다린다
             code = pty.exitstatus
         except Exception:
             log.warning("프로세스 상태를 읽지 못함 %s", session.id[:8], exc_info=True)
             code = None
+        if not_ready:
+            code = NOT_READY_CODE  # 강제로 끝낸 종료 코드 대신 hq가 끝낸 이유를 알린다
         with self._lock:
             if session.generation != generation:
                 return
             session.running = False
             closing = session.closing
+            with session.lock:
+                session.held = _Held()  # 신호 전에 끝났으면 쥐고 있던 입력은 보내지 않고 버린다
         if not closing:
             self._notify(self._on_exit, session.id, code)
+
+    def _ready_expired(self, session: _Session, started: float) -> bool:
+        """신호를 기다린 지 ready_timeout이 지났으면 문을 닫고(쥐고 있던 입력은 버린다) True.
+
+        close()가 끝내는 중인 세션은 건드리지 않는다(닫으려고 끝낸 세션은 보고하지 않는다).
+        """
+        if session.gate is not _Gate.HOLD or time.monotonic() - started < self._ready_timeout:
+            return False
+        with session.lock:
+            if session.gate is not _Gate.HOLD or session.closing:
+                return False
+            session.gate = _Gate.SHUT
+            session.held = _Held()
+            return True
 
     def _get(self, session_id: str) -> _Session | None:
         with self._lock:
@@ -281,18 +390,26 @@ class SessionManager:
         if session is None:
             return
         with session.lock:
-            if not session.running or session.closing:
+            if not session.running or session.closing or session.gate is _Gate.SHUT:
                 return
-            try:
-                session.pty.write(data)
-            except Exception:
-                log.warning("입력을 넘기지 못함 %s", session_id[:8], exc_info=True)
+            if session.gate is _Gate.HOLD and not _TERMINAL_REPLIES.fullmatch(data):
+                if session.held.add(data):
+                    log.warning("준비 신호 전 입력이 %d자를 넘어 나머지를 버림 %s", HELD_INPUT_LIMIT, session_id[:8])
+                return
+            self._send(session, data)
+
+    def _send(self, session: _Session, data: str) -> None:
+        try:
+            session.pty.write(data)
+        except Exception:
+            log.warning("입력을 넘기지 못함 %s", session.id[:8], exc_info=True)
 
     def resize(self, session_id: str, cols: int, rows: int) -> None:
         session = self._get(session_id)
         if session is None:
             return
         with session.lock:
+            session.size = (rows, cols)
             if not session.running or session.closing:
                 return
             try:

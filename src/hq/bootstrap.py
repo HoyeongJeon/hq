@@ -13,6 +13,12 @@ from hq.validation import validate_host, validate_username
 MAIN_MARKER = "#region main"
 _PLACEHOLDER = "__HQ_PARAMS__"
 
+# 준비 신호(spec 7.3). 부트스트랩이 안전장치를 건 직후 콘솔 제목을 이 글자로 바꾸면 ConPTY가 화면에 보이지 않는
+# 제목 시퀀스로 내보낸다. ':'를 넣어 host, ID, Windows 경로가 될 수 없게 했다(이것들은 화면에 찍힐 수 있다).
+READY_MARKER = "hq:safety-ready"
+# 준비 신호가 오지 않아 hq가 프로세스를 끝냈을 때 hq가 정하는 종료 코드. 스크립트는 이 코드로 끝나지 않는다.
+NOT_READY_CODE = 30
+
 
 class ExitReason(StrEnum):
     USER_EXIT = "USER_EXIT"
@@ -22,6 +28,7 @@ class ExitReason(StrEnum):
     QUOTA = "QUOTA"
     SECRET_UNREADABLE = "SECRET_UNREADABLE"
     DISCONNECTED = "DISCONNECTED"
+    NOT_READY = "NOT_READY"
     UNKNOWN = "UNKNOWN"
 
 
@@ -33,6 +40,7 @@ _REASONS = {
     13: ExitReason.QUOTA,
     14: ExitReason.SECRET_UNREADABLE,
     20: ExitReason.DISCONNECTED,
+    NOT_READY_CODE: ExitReason.NOT_READY,
 }
 
 

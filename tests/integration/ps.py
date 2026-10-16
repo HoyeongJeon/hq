@@ -12,6 +12,7 @@ _UTF8_OUTPUT = "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n"
 
 
 def run_ps(script: str, *, env: dict[str, str] | None = None, timeout: float = 60) -> subprocess.CompletedProcess[str]:
+    """보이지 않는 따로 된 콘솔에서 돌린다. pytest의 콘솔을 함께 쓰면 스크립트가 바꾼 제목이 그 터미널에 남는다."""
     encoded = base64.b64encode((_UTF8_OUTPUT + script).encode("utf-16-le")).decode("ascii")
     return subprocess.run(
         [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
@@ -22,6 +23,7 @@ def run_ps(script: str, *, env: dict[str, str] | None = None, timeout: float = 6
         timeout=timeout,
         env={**os.environ, **(env or {})},
         check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
 
 

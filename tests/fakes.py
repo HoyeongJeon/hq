@@ -40,6 +40,8 @@ class FakePty:
         return item
 
     def write(self, text: str) -> int:
+        if self.closed:
+            raise EOFError("closed")  # ConPty.write처럼
         self.written.append(text)
         if text == "exit\r" and self._exit_on_exit:
             self.finish(0)
@@ -57,7 +59,9 @@ class FakePty:
         return True
 
     def close(self) -> None:
+        """ConPty.close처럼: 살아 있던 프로세스는 함께 끝나고(종료 코드는 모르는 채), 읽기와 쓰기는 EOFError를 낸다."""
         self.closed = True
+        self.alive = False
         self._queue.put(None)  # 막혀 있는 read()를 깨운다
 
 

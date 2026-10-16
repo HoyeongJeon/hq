@@ -11,7 +11,7 @@ import pytest
 from fakes import wait_for
 from ptyrun import DA1_ANSWER, DA1_QUERY
 
-from hq.bootstrap import powershell_exe
+from hq.bootstrap import NOT_READY_CODE, READY_MARKER, encoded_argv, powershell_exe, prelude
 from hq.sessions import SessionManager, spawn_conpty
 
 pytestmark = pytest.mark.integration
@@ -19,12 +19,32 @@ SID = "d" * 32
 SHELL = [powershell_exe(), "-NoLogo", "-NoProfile", "-NoExit"]
 
 
+class Traced:
+    """ConPty를 감싸, 읽은 출력과 쓴 입력을 일어난 순서대로 trace에 남긴다. 나머지는 그대로 넘긴다."""
+
+    def __init__(self, pty, trace: list[tuple[str, str]]) -> None:
+        self._pty = pty
+        self.trace = trace
+
+    def __getattr__(self, name):
+        return getattr(self._pty, name)
+
+    def read(self, size: int = 4096) -> str:
+        data = self._pty.read(size)
+        self.trace.append(("out", data))
+        return data
+
+    def write(self, s: str) -> int:
+        self.trace.append(("in", s))
+        return self._pty.write(s)
+
+
 def make(**options):
-    """실제 ConPTY로 세션 관리자를 만든다. 띄운 PTY도 돌려줘 pid를 볼 수 있게 한다."""
+    """실제 ConPTY로 세션 관리자를 만든다. 띄운 PTY도 돌려줘 pid와 trace를 볼 수 있게 한다."""
     out, exits, ptys = [], [], []
 
     def spawn(argv, rows, cols):
-        ptys.append(spawn_conpty(argv, rows, cols))
+        ptys.append(Traced(spawn_conpty(argv, rows, cols), []))
         return ptys[-1]
 
     def on_output(session_id, data):
@@ -170,6 +190,82 @@ def test_a_session_leaves_hq_without_a_listening_port():
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout.splitlines()[-1])
     assert report["listening"] == [report["control"]]
+
+
+# ---- 준비 신호 (spec 7.3) ----
+
+
+def first_output_with(trace: list[tuple[str, str]], text: str) -> int:
+    """출력을 이어 붙여 text가 처음 다 보인 trace 위치."""
+    seen = ""
+    for index, (kind, data) in enumerate(trace):
+        if kind == "out":
+            seen += data
+            if text in seen:
+                return index
+    raise AssertionError(f"출력에 {text!r}가 없다: {seen[-300:]!r}")
+
+
+def test_the_real_prelude_opens_the_gate_and_held_input_runs_after_it(cleanup):
+    sid = "4" * 32
+    manager, out, exits, ptys = make(ready_marker=READY_MARKER)
+    cleanup(manager)
+    # 원격 세션 대신 한 줄을 읽어 바꿔 찍는다. 그 뒤 스크립트가 끝나 프롬프트를 그리려 하면 안전장치가 1로 끝낸다.
+    script = prelude() + "$line = Read-Host\nWrite-Output ('got-' + $line.ToUpper())\n"
+    manager.open(sid, "s", encoded_argv(script), 80, 24)
+    manager.write(sid, "hello\r")  # 신호가 오기 전에 친 입력
+    assert wait_for(lambda: "got-HELLO" in "".join(out), timeout=20)
+    assert wait_for(lambda: exits == [1], timeout=10)
+    trace = ptys[0].trace
+    ready_at = first_output_with(trace, READY_MARKER)
+    # DA1 응답은 on_output이 manager.write로만 보냈다. 문을 지나 신호보다 먼저 갔고, 친 입력은 신호 뒤에야 갔다.
+    assert trace.index(("in", DA1_ANSWER)) < ready_at < trace.index(("in", "hello\r"))
+
+
+def never_ready_argv(kind: str) -> list[str]:
+    if kind == "blocked":
+        # 백신이 본문을 막은 것처럼: 안전장치도 신호도 없이 -NoExit가 내 PC의 프롬프트를 연다
+        return [*SHELL, "-Command", "Start-Sleep 0"]
+    # 정책이 제한 언어 모드를 건 것처럼: 진짜 prelude가 돌지만 [Environment]::Exit와 제목 바꾸기가 거부된다.
+    # 안전장치가 듣지 않아 내 PC의 프롬프트가 뜬다. 거부 메시지는 제목 줄의 원문을 보여 준다.
+    return encoded_argv("$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\n" + prelude())
+
+
+NEVER_READY = ["blocked", "constrained-language"]
+
+
+def typed_ahead(flag) -> str:
+    return f"New-Item -ItemType File -Path '{flag}' | Out-Null\r"
+
+
+@pytest.mark.parametrize("kind", NEVER_READY)
+def test_a_shell_that_never_signals_ready_is_ended_and_held_input_never_runs(cleanup, caplog, tmp_path, kind):
+    sid = "5" * 32
+    flag = tmp_path / "ran-locally.txt"
+    manager, out, exits, ptys = make(ready_marker=READY_MARKER, ready_timeout=2.0)
+    cleanup(manager)
+    start = time.monotonic()
+    manager.open(sid, "s", never_ready_argv(kind), 80, 24)
+    manager.write(sid, typed_ahead(flag))
+    assert wait_for(lambda: exits, timeout=10)
+    assert 2.0 <= time.monotonic() - start < 6
+    assert exits == [NOT_READY_CODE]
+    assert not pid_alive(ptys[0].pid)
+    assert not flag.exists(), "".join(out)
+    assert any(sid[:8] in message for message in session_warnings(caplog))
+
+
+@pytest.mark.parametrize("kind", NEVER_READY)
+def test_control_without_the_gate_the_same_input_runs_on_this_pc(cleanup, tmp_path, kind):
+    # 대조군: 위 테스트와 같은 셸, 같은 입력. 문이 없으면 친 명령이 내 PC에서 실제로 실행된다.
+    # 그래서 위 테스트의 "실행되지 않았다"는 그 셸이 원래 입력을 읽지 않아서 나온 결과일 수 없다.
+    sid = "6" * 32
+    flag = tmp_path / "ran-locally.txt"
+    manager, out, _, _ = make()
+    cleanup(manager)
+    manager.open(sid, "s", never_ready_argv(kind), 80, 24)
+    manager.write(sid, typed_ahead(flag))
+    assert wait_for(flag.exists, timeout=15), "".join(out)
 
 
 HELPER = """

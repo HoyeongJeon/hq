@@ -7,6 +7,8 @@ import pytest
 
 from hq import bootstrap
 from hq.bootstrap import (
+    NOT_READY_CODE,
+    READY_MARKER,
     BootstrapParams,
     ExitReason,
     build_command,
@@ -15,7 +17,7 @@ from hq.bootstrap import (
     ps_json_literal,
     reason_for_exit,
 )
-from hq.validation import ValidationError
+from hq.validation import ValidationError, validate_host, validate_username
 
 PARAMS = BootstrapParams(
     host="10.0.1.21",
@@ -64,6 +66,7 @@ def test_no_launched_script_decodes_base64():
         (13, ExitReason.QUOTA),
         (14, ExitReason.SECRET_UNREADABLE),
         (20, ExitReason.DISCONNECTED),
+        (30, ExitReason.NOT_READY),
         (1, ExitReason.UNKNOWN),
         (-1, ExitReason.UNKNOWN),
         (None, ExitReason.UNKNOWN),
@@ -75,6 +78,14 @@ def test_reason_for_exit(code, reason):
 
 def test_reason_values_are_their_names():
     assert ExitReason.DISCONNECTED.value == "DISCONNECTED"
+    assert ExitReason.NOT_READY.value == "NOT_READY"
+
+
+def test_not_ready_is_a_code_only_hq_reports():
+    assert NOT_READY_CODE == 30
+    assert reason_for_exit(NOT_READY_CODE) is ExitReason.NOT_READY
+    # 스크립트는 이 코드로 끝나지 않는다. hq가 준비 신호를 기다리다 프로세스를 끝냈을 때만 쓴다.
+    assert not re.search(r"Exit\(\s*30\s*\)|\bexit\s+30\b", bootstrap.template_text(), re.IGNORECASE)
 
 
 def test_values_travel_only_inside_the_json_literal():
@@ -137,3 +148,37 @@ def test_template_has_one_placeholder_and_the_safety_net_first():
     assert text.count("__HQ_PARAMS__") == 1
     assert text.count(bootstrap.MAIN_MARKER) == 1
     assert text.index("function global:prompt") < text.index(bootstrap.MAIN_MARKER)
+
+
+# ---- 준비 신호 (spec 7.3) ----
+
+
+def _statements_after_the_safety_net() -> list[str]:
+    text = prelude()
+    start = text.index("function global:prompt")
+    rest = text[text.index("\n}\n", start) + 3 :]
+    return [line for line in rest.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+
+
+def test_the_ready_signal_is_the_first_statement_after_the_safety_net():
+    first = _statements_after_the_safety_net()[0]
+    assert first.startswith("$Host.UI.RawUI.WindowTitle = "), first  # ConPTY가 제목 시퀀스(OSC)로 내보낸다
+    pieces = re.findall(r"'([^']*)'", first)
+    assert "".join(pieces) == READY_MARKER, first
+
+
+def test_the_ready_marker_never_appears_whole_in_the_script_text():
+    # 줄이 실패하면 PowerShell 오류 메시지가 그 줄의 원문을 그대로 보여 준다(예: 정책이 건 제한 언어 모드에서
+    # 제목 바꾸기와 [Environment]::Exit가 모두 거부될 때). 원문에 표시가 통째로 있으면 hq가 그 오류 메시지를
+    # 준비 신호로 착각해, 안전장치가 듣지 않는 탭에 입력을 보낸다. 그래서 표시는 실행할 때 조각을 이어 만든다.
+    assert READY_MARKER not in bootstrap.template_text()
+    assert READY_MARKER not in build_script(PARAMS)
+
+
+def test_the_ready_marker_cannot_be_a_host_or_user_name():
+    # 부트스트랩은 접속하기 전에 host를 화면에 찍는다. 그 글자가 준비 신호로 읽히면 안 된다.
+    assert READY_MARKER.isascii()
+    with pytest.raises(ValidationError):
+        validate_host(READY_MARKER)
+    with pytest.raises(ValidationError):
+        validate_username(READY_MARKER)

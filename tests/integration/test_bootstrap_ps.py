@@ -1,8 +1,18 @@
+import re
+
 import pytest
 from ps import parse_errors, run_ps
 from ptyrun import run_pty
 
-from hq.bootstrap import BootstrapParams, build_command, build_script, encoded_argv, prelude, ps_json_literal
+from hq.bootstrap import (
+    READY_MARKER,
+    BootstrapParams,
+    build_command,
+    build_script,
+    encoded_argv,
+    prelude,
+    ps_json_literal,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -87,6 +97,32 @@ def test_missing_secret_exits_14(tmp_path):
     params = BootstrapParams("192.0.2.10", "Administrator", "시험", str(tmp_path / "missing.dpapi"))
     output, code = run_pty(build_command(params), timeout=40)
     assert code == 14, output
+
+
+# ---- 준비 신호 (spec 7.3) ----
+
+# 터미널 제목 시퀀스(OSC): ESC ] <번호> ; <제목> 뒤에 BEL 또는 ST(ESC \). 화면에 글자로 찍히지 않는다.
+_TITLE = re.compile(r"\x1b\][0-9]*;[^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def _visible(output: str) -> str:
+    return _TITLE.sub("", output)
+
+
+def test_the_ready_signal_reaches_the_conpty_output_as_a_title():
+    output, code = run_pty(encoded_argv(prelude()))
+    assert code == 1, output  # 세션 없이 프롬프트를 그리려 하자 안전장치가 끝냈다
+    assert READY_MARKER in output, repr(output)
+    assert READY_MARKER not in _visible(output), repr(output)
+
+
+def test_the_bootstrap_signals_ready_before_anything_else_and_only_as_a_title(tmp_path):
+    params = BootstrapParams("192.0.2.10", "Administrator", "시험", str(tmp_path / "missing.dpapi"))
+    output, code = run_pty(build_command(params), timeout=40)
+    assert code == 14, output
+    assert READY_MARKER in output, repr(output)
+    assert output.index(READY_MARKER) < output.index("접속 중"), repr(output)
+    assert READY_MARKER not in _visible(output), repr(output)  # 부트스트랩의 다른 출력에는 나오지 않는다
 
 
 # (FullyQualifiedErrorId, 메시지, 기대 종료 코드). 실서버 표본(V3)은 docs/verification.md에 기록했다.

@@ -6,24 +6,31 @@ import pytest
 from fakes import FakePty, FakeSpawner, wait_for
 from winpty import WinptyError
 
+from hq import sessions
+from hq.bootstrap import NOT_READY_CODE
 from hq.sessions import ConPty, SessionError, SessionManager
 
 SID = "a" * 32
 SID2 = "b" * 32
 SID3 = "c" * 32
+MARKER = "hq:test-ready"
 
 
-def make(spawn):
+def make(spawn, **options):
     out, exits = [], []
+    timings = {"poll_interval": 0.01, "drain_delay": 0.02, "close_timeout": 0.3}
     manager = SessionManager(
         spawn=spawn,
         on_output=lambda sid, data: out.append((sid, data)),
         on_exit=lambda sid, code: exits.append((sid, code)),
-        poll_interval=0.01,
-        drain_delay=0.02,
-        close_timeout=0.3,
+        **{**timings, **options},
     )
     return manager, out, exits
+
+
+def gated(spawn, **options):
+    """준비 신호(MARKER)를 기다리는 관리자."""
+    return make(spawn, ready_marker=MARKER, **options)
 
 
 def test_output_is_forwarded_in_order_and_size_is_passed():
@@ -408,3 +415,277 @@ def test_conpty_read_reports_eof_once_the_shell_has_ended_or_the_pty_is_closed()
     closed.close()
     with pytest.raises(EOFError):
         closed.read()
+
+
+# ---- 가짜 PTY도 닫으면 어댑터처럼 행동한다 ----
+
+
+@pytest.mark.parametrize("make_pty", [FakePty, lambda: ConPty(StubWinpty(alive=True))], ids=["fake", "adapter"])
+def test_closing_a_live_pty_ends_it_and_refuses_input(make_pty):
+    pty = make_pty()
+    pty.close()
+    assert not pty.isalive()  # 의사 콘솔을 닫으면 그 안의 프로세스도 끝난다
+    with pytest.raises(EOFError):
+        pty.write("x")
+    with pytest.raises(EOFError):
+        pty.read()
+    pty.close()  # 여러 번 불러도 된다
+
+
+# ---- 준비 신호: 안전장치가 걸렸다는 신호가 오기 전에는 입력을 쥐고 있는다 (spec 7.3, Task 12b) ----
+
+TITLE = f"\x1b]0;{MARKER}\x1b\\"  # ConPTY가 콘솔 제목 바꾸기를 내보내는 모양
+
+
+def _warning_messages(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "hq.sessions" and r.levelno == logging.WARNING]
+
+
+def test_input_typed_before_the_ready_signal_is_held_then_sent_in_typed_order():
+    spawn = FakeSpawner()
+    manager, out, _ = gated(spawn)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "dir")
+    manager.write(SID, "\r")
+    spawn.ptys[0].feed("Windows PowerShell")
+    assert wait_for(lambda: len(out) == 1)
+    assert spawn.ptys[0].written == []
+    spawn.ptys[0].feed(TITLE)
+    assert wait_for(lambda: spawn.ptys[0].written == ["dir", "\r"])
+    manager.write(SID, "x")  # 신호 뒤에는 바로 넘긴다
+    assert spawn.ptys[0].written == ["dir", "\r", "x"]
+    assert wait_for(lambda: len(out) == 2)
+    assert out == [(SID, "Windows PowerShell"), (SID, TITLE)]  # 출력은 신호까지 그대로 넘긴다
+
+
+def test_a_ready_signal_split_across_reads_still_counts():
+    spawn = FakeSpawner()
+    manager, out, _ = gated(spawn)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "x")
+    for ch in MARKER[:-1]:  # 처음부터 한 글자씩 나눠 읽혀도 이어서 본다
+        spawn.ptys[0].feed(ch)
+    assert wait_for(lambda: len(out) == len(MARKER) - 1)
+    assert spawn.ptys[0].written == []
+    spawn.ptys[0].feed(MARKER[-1])
+    assert wait_for(lambda: spawn.ptys[0].written == ["x"])
+
+
+def test_text_that_only_resembles_the_ready_signal_opens_nothing():
+    spawn = FakeSpawner()
+    manager, out, _ = gated(spawn)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "x")
+    spawn.ptys[0].feed(MARKER[:-1] + "!")
+    spawn.ptys[0].feed("!" + MARKER[1:])
+    assert wait_for(lambda: len(out) == 2)
+    assert spawn.ptys[0].written == []
+
+
+class BlockingWritePty(FakePty):
+    """block_on을 쓰려 하면 release가 열릴 때까지 멈춘다."""
+
+    def __init__(self, block_on: str) -> None:
+        super().__init__()
+        self._block_on = block_on
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def write(self, text: str) -> int:
+        if text == self._block_on:
+            self.entered.set()
+            self.release.wait(2)
+        return super().write(text)
+
+
+def test_a_write_racing_the_flush_waits_its_turn():
+    pty = BlockingWritePty(block_on="1")
+    manager, _, _ = gated(lambda argv, rows, cols: pty)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    for key in ("1", "2", "3"):
+        manager.write(SID, key)
+    pty.feed(MARKER)
+    assert pty.entered.wait(2)  # 읽기 스레드가 쥐고 있던 입력을 보내는 중이다
+    late = threading.Thread(target=manager.write, args=(SID, "4"))
+    late.start()
+    time.sleep(0.05)
+    pty.release.set()
+    late.join(2)
+    assert wait_for(lambda: pty.written == ["1", "2", "3", "4"])
+
+
+def test_no_ready_signal_in_time_ends_the_process_as_not_ready(caplog):
+    spawn = FakeSpawner()
+    manager, _, exits = gated(spawn, ready_timeout=0.2)
+    start = time.monotonic()
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "Remove-Item C:\\data -Recurse\r")
+    assert wait_for(lambda: exits)
+    assert time.monotonic() - start >= 0.2
+    time.sleep(0.1)
+    assert exits == [(SID, NOT_READY_CODE)]  # 강제로 끝낸 프로세스의 종료 코드(1)는 따로 보고하지 않는다
+    assert spawn.ptys[0].terminated
+    assert spawn.ptys[0].written == []
+    assert any(SID[:8] in message for message in _warning_messages(caplog))
+
+
+class StubbornPty(FakePty):
+    """terminate()를 받고도 한동안 살아 있는 프로세스."""
+
+    def terminate(self, force: bool = False) -> bool:
+        self.terminated = True
+        return False
+
+
+def test_a_ready_signal_after_the_timeout_releases_nothing():
+    pty = StubbornPty()
+    manager, out, exits = gated(lambda argv, rows, cols: pty, ready_timeout=0.1)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "x")
+    assert wait_for(lambda: pty.terminated)
+    manager.write(SID, "y")
+    pty.feed(MARKER)
+    assert wait_for(lambda: out)
+    manager.write(SID, "z")  # 늦게 온 신호가 문을 다시 열지 않았다
+    pty.finish(5)
+    assert wait_for(lambda: exits)
+    time.sleep(0.05)
+    assert pty.written == []
+    assert exits == [(SID, NOT_READY_CODE)]
+
+
+def test_a_process_that_ends_before_the_ready_signal_reports_its_own_code():
+    spawn = FakeSpawner()
+    manager, _, exits = gated(spawn, ready_timeout=0.2)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "x")
+    spawn.ptys[0].finish(14)
+    assert wait_for(lambda: exits)
+    time.sleep(0.3)  # ready_timeout이 지나도 NOT_READY를 더 보고하지 않는다
+    assert exits == [(SID, 14)]
+    assert not spawn.ptys[0].terminated
+    assert spawn.ptys[0].written == []
+
+
+def test_closing_a_tab_that_is_not_ready_reports_nothing_and_never_sends_held_input():
+    spawn = FakeSpawner(exit_on_exit=False)
+    manager, _, exits = gated(spawn, ready_timeout=0.2, close_timeout=0.6)  # 닫는 동안 ready_timeout이 지난다
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "x")
+    manager.close(SID)
+    assert spawn.ptys[0].written == ["\x03", "exit\r", "exit\r"]  # 닫기 입력만 갔다
+    assert spawn.ptys[0].terminated
+    time.sleep(0.1)
+    assert exits == []
+
+
+def test_reconnect_holds_input_until_the_new_process_signals_ready():
+    spawn = FakeSpawner()
+    manager, _, exits = gated(spawn)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "a")
+    spawn.ptys[0].feed(MARKER)
+    assert wait_for(lambda: spawn.ptys[0].written == ["a"])
+    spawn.ptys[0].finish(20)
+    assert wait_for(lambda: exits)
+    manager.reconnect(SID, ["ps2"], 80, 24)
+    manager.write(SID, "b")
+    time.sleep(0.05)
+    assert spawn.ptys[1].written == []
+    spawn.ptys[1].feed(MARKER)
+    assert wait_for(lambda: spawn.ptys[1].written == ["b"])
+    assert spawn.ptys[0].written == ["a"]
+
+
+@pytest.mark.parametrize("marker", [None, MARKER], ids=["no-gate", "gate"])
+def test_input_and_resize_sent_while_reconnect_swaps_the_process_reach_the_new_one(marker):
+    # 다시 연결은 구분선을 내보낸 뒤 새 프로세스를 띄운다. 그 사이에 들어온 입력과 크기 바꾸기가 끝난 프로세스로
+    # 가서 사라지면 안 된다(구분선을 받은 on_output이 바로 치는 것으로 그 틈을 흉내 낸다).
+    spawn = FakeSpawner()
+    exits = []
+
+    def on_output(sid, data):
+        if "다시 연결" in data:
+            manager.write(sid, "x")
+            manager.resize(sid, 132, 50)
+
+    manager = SessionManager(
+        spawn=spawn,
+        on_output=on_output,
+        on_exit=lambda sid, code: exits.append(code),
+        poll_interval=0.01,
+        drain_delay=0.02,
+        ready_marker=marker,
+    )
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    spawn.ptys[0].finish(20)
+    assert wait_for(lambda: exits)
+    manager.reconnect(SID, ["ps2"], 80, 24)
+    assert spawn.calls[-1] == (["ps2"], 50, 132)
+    if marker is not None:
+        spawn.ptys[1].feed(marker)
+    assert wait_for(lambda: spawn.ptys[1].written == ["x"])
+    assert spawn.ptys[0].written == []
+
+
+def test_without_a_ready_marker_input_goes_straight_through_and_nothing_times_out():
+    spawn = FakeSpawner()
+    manager, _, exits = make(spawn, ready_timeout=0.05)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "x")
+    assert spawn.ptys[0].written == ["x"]
+    time.sleep(0.15)
+    assert exits == []
+    assert not spawn.ptys[0].terminated
+
+
+# xterm.js가 ConPTY의 질의에 답하는 응답. ConPTY는 시작할 때 DA1 답을 기다리므로 쥐고 있으면 신호가 늦거나 안 온다.
+REPLIES = [
+    "\x1b[?1;0c",  # DA1
+    "\x1b[>0;276;0c",  # DA2
+    "\x1b[24;80R",  # 커서 위치
+    "\x1b[0n",  # 장치 상태
+    "\x1b[I",  # 포커스 들어옴
+    "\x1b[O",  # 포커스 나감
+    "\x1b[I\x1b[?1;0c",  # 응답 여러 개가 한 번에
+]
+
+
+def test_terminal_replies_pass_the_gate_before_ready():
+    spawn = FakeSpawner()
+    manager, _, _ = gated(spawn)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    for reply in REPLIES:
+        manager.write(SID, reply)
+    assert spawn.ptys[0].written == REPLIES
+
+
+@pytest.mark.parametrize(
+    "chunk",
+    ["\x1b[?1;0cdir\r", "\x1b[24;80R\r", "\x1b[A", "\x1b[0n\x1b", "\r", "\x1b[?1;0c\n"],
+    ids=["reply+command", "reply+enter", "arrow-key", "reply+esc", "enter", "reply+newline"],
+)
+def test_a_chunk_with_anything_besides_terminal_replies_is_held(chunk):
+    spawn = FakeSpawner()
+    manager, _, _ = gated(spawn)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, chunk)
+    assert spawn.ptys[0].written == []
+    spawn.ptys[0].feed(MARKER)
+    assert wait_for(lambda: spawn.ptys[0].written == [chunk])
+
+
+def test_held_input_is_capped_and_the_overflow_is_dropped_with_one_warning(caplog):
+    limit = sessions.HELD_INPUT_LIMIT
+    spawn = FakeSpawner()
+    manager, _, _ = gated(spawn)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "a" * (limit - 1))
+    manager.write(SID, "bc")  # 한 글자만 들어간다
+    manager.write(SID, "d")  # 다 찼다
+    spawn.ptys[0].feed(MARKER)
+    expected = "a" * (limit - 1) + "b"
+    assert wait_for(lambda: "".join(spawn.ptys[0].written) == expected)
+    messages = _warning_messages(caplog)
+    assert len(messages) == 1, messages
+    assert SID[:8] in messages[0]
