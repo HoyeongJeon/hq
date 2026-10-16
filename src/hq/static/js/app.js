@@ -613,7 +613,7 @@
         // 기다리는 사이에 바뀐 크기는 hq에 닿지 않았을 수 있다(여는 중이거나 끝난 탭이었다). 보낸 크기와 다르면 다시 알린다
         if (tab.term.cols !== cols || tab.term.rows !== rows) api.resize(tab.sid, tab.term.cols, tab.term.rows);
       }
-      tab.term.focus();
+      focusTerminal(tab);
       return;
     }
     tab.term.options.disableStdin = Boolean(tab.ended); // 띄우지 못했다. 끝난 탭이면 입력 잠금을 되돌린다
@@ -683,10 +683,16 @@
       tab.unread = false;
       requestAnimationFrame(() => {
         fitTab(tab);
-        if (tab.term) tab.term.focus();
+        focusTerminal(tab); // 그사이 대화 상자가 열렸을 수 있으니 이 순간에 확인한다
       });
     }
     renderTabs();
+  }
+
+  function focusTerminal(tab) {
+    // 대화 상자가 열려 있으면 터미널에 포커스를 주지 않는다. 주면 대화 상자에 치는 글자(비밀번호 포함)와 Enter가
+    // 그 탭의 원격 셸로 간다. 닫힌 탭이나 보이지 않는 탭에도 주지 않는다
+    if ($('#modal').hidden && tab.term && tab.sid === state.active && state.tabs.includes(tab)) tab.term.focus();
   }
 
   function renderTabs() {
@@ -768,7 +774,7 @@
     }).then((yes) => {
       // term.paste는 onData로 이어져 키 입력과 같은 입력 줄(tab.input)을 탄다. 따로 보내면 순서가 뒤섞인다
       if (yes && !tab.ended) tab.term.paste(text);
-      tab.term.focus();
+      focusTerminal(tab);
     });
   }
 

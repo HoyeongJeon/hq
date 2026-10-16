@@ -97,6 +97,17 @@ def test_trust_dialog_is_closed_before_an_ended_tab_reconnects():
     assert body.index("await messageDialog(") < body.index("return result.ok;")
 
 
+def test_terminals_take_focus_only_through_the_modal_aware_helper():
+    # 대화 상자가 열려 있을 때 터미널이 포커스를 가져가면 대화 상자에 치는 글자(비밀번호 포함)가 원격 셸로 간다
+    text = read("js/app.js")
+    helper = function_body(text, "function focusTerminal(tab)")
+    assert "$('#modal').hidden" in helper
+    assert text.count("term.focus()") == helper.count("term.focus()") == 1
+    # 다음 프레임에 주는 포커스도 그 순간에 확인한다
+    activate = function_body(text, "function activate(sid)")
+    assert re.search(r"requestAnimationFrame\(\(\) => \{[^}]*focusTerminal\(tab\);", activate)
+
+
 def test_a_rejected_session_call_takes_the_normal_failure_path():
     text = read("js/app.js")
     body = function_body(text, "async function startSession(tab, mode)")
