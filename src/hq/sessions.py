@@ -5,10 +5,14 @@
 ConPTY는 프로세스가 끝난 뒤 EOF를 약 5초 늦게 내므로 EOF를 기다리지 않는다(2026-10-16 저수준
 winpty.PTY로 다시 재도 같았다).
 
-준비 신호(spec 7.3): ready_marker를 주면 프로세스마다 출력에서 그 글자를 볼 때까지 탭의 입력을 보내지 않고
+준비 신호(spec 7.3): ready_marker를 주면 프로세스마다 출력에서 그 신호를 볼 때까지 탭의 입력을 보내지 않고
 쥐고 있다가, 보면 친 순서대로 보낸다. 부트스트랩은 안전장치를 건 직후에 신호를 내므로, 안전장치가 걸리지 않은
 탭(백신이 본문을 막아 내 PC의 프롬프트가 뜬 탭)에는 입력이 가지 않는다. ready_timeout초 안에 신호가 오지 않으면
 프로세스를 끝내고 NOT_READY_CODE로 보고한다.
+
+신호는 콘솔 제목을 ready_marker로 바꾸면 ConPTY가 내보내는 제목 시퀀스 하나(ESC ] 0 또는 2 ; 글자, BEL 또는 ESC \\)다.
+글자만 보지 않는다. 제한 언어 모드에서는 신호도 안전장치도 없는 채 접속될 수 있는데, 별명에 그 글자가 들어 있으면
+원격 프롬프트가 그것을 그냥 글자로 찍어 문이 열릴 수 있기 때문이다.
 """
 
 import contextlib
@@ -40,6 +44,16 @@ HELD_INPUT_LIMIT = 64 * 1024  # 준비 신호 전에 쥐고 있을 입력(글자
 # ConPTY는 시작할 때 DA1 답을 기다리므로(답이 없으면 약 3초) 이것까지 쥐고 있으면 신호가 늦게 오거나 오지 않는다.
 # Enter가 없어 명령을 실행할 수 없으므로 신호 전에도 보낸다. 다른 글자가 섞인 입력은 통째로 쥐고 있는다.
 _TERMINAL_REPLIES = re.compile(r"(?:\x1b\[\?[0-9;]*c|\x1b\[>[0-9;]*c|\x1b\[[0-9]+;[0-9]+R|\x1b\[0n|\x1b\[[IO])+")
+_TITLE_START = ("\x1b]0;", "\x1b]2;")  # OSC 0(아이콘 이름과 제목), OSC 2(제목)
+_TITLE_END = ("\x07", "\x1b\\")  # BEL, ST
+
+
+def _title_signal(marker: str) -> tuple[re.Pattern[str], int]:
+    """제목을 marker로 바꾸는 시퀀스를 찾는 정규식과 그 시퀀스의 가장 긴 길이."""
+    alternatives = "|".join(re.escape(part) for part in _TITLE_START)
+    endings = "|".join(re.escape(part) for part in _TITLE_END)
+    pattern = re.compile(f"(?:{alternatives}){re.escape(marker)}(?:{endings})")
+    return pattern, max(map(len, _TITLE_START)) + len(marker) + max(map(len, _TITLE_END))
 
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
@@ -159,14 +173,21 @@ def _let_children_handle_ctrl_c() -> None:
 
 
 def spawn_conpty(argv: list[str], rows: int, cols: int) -> ConPty:
-    """argv를 ConPTY 안에서 띄운다. 작업 폴더와 환경 변수는 hq의 것을 물려준다."""
+    """argv를 ConPTY 안에서 띄운다. 작업 폴더와 환경 변수는 hq의 것을 물려준다.
+
+    띄우지 못하면 OSError. winpty는 CreateProcess 실패(예: 백신이 막은 액세스 거부)를 WinptyError로 던지므로
+    메시지를 그대로 옮겨 OSError로 바꾼다.
+    """
     app = shutil.which(argv[0])
     if app is None:
         raise FileNotFoundError(f"실행 파일을 찾을 수 없습니다: {argv[0]}")
     _let_children_handle_ctrl_c()
-    pty = PTY(cols, rows, backend=Backend.ConPTY)
-    # winpty.PtyProcess.spawn과 같은 모양으로 넘긴다(winpty가 앞에 실행 파일 경로를 붙인다)
-    pty.spawn(app, cmdline=" " + subprocess.list2cmdline(argv[1:]) if len(argv) > 1 else None)
+    try:
+        pty = PTY(cols, rows, backend=Backend.ConPTY)
+        # winpty.PtyProcess.spawn과 같은 모양으로 넘긴다(winpty가 앞에 실행 파일 경로를 붙인다)
+        pty.spawn(app, cmdline=" " + subprocess.list2cmdline(argv[1:]) if len(argv) > 1 else None)
+    except WinptyError as exc:
+        raise OSError(str(exc)) from exc
     return ConPty(pty)
 
 
@@ -245,6 +266,7 @@ class SessionManager:
         self._drain_delay = drain_delay
         self._close_timeout = close_timeout
         self._ready_marker = ready_marker  # None이면 신호를 기다리지 않고 입력을 바로 보낸다
+        self._ready_signal = None if ready_marker is None else _title_signal(ready_marker)
         self._ready_timeout = ready_timeout
         self._sessions: dict[str, _Session] = {}
         self._lock = threading.Lock()
@@ -312,8 +334,8 @@ class SessionManager:
             log.warning("화면에 알리지 못함 %s", session_id[:8], exc_info=True)
 
     def _read_loop(self, session: _Session, generation: int, pty: PtyLike) -> None:
-        looking_for = self._ready_marker  # 이 프로세스의 준비 신호를 볼 때까지만 찾는다
-        tail = ""  # 앞 출력의 끝부분. 신호가 두 번에 나뉘어 읽혀도 찾는다
+        looking_for = self._ready_signal  # 이 프로세스의 준비 신호를 볼 때까지만 찾는다
+        tail = ""  # 앞 출력의 끝부분. 신호가 여러 번에 나뉘어 읽혀도 찾는다
         while True:
             try:
                 data = pty.read(4096)
@@ -325,12 +347,13 @@ class SessionManager:
             if not data:
                 continue
             if looking_for is not None:
+                signal, longest = looking_for
                 seen = tail + data
-                if looking_for in seen:
+                if signal.search(seen):
                     looking_for = None
                     self._on_ready(session, generation)
                 else:
-                    tail = seen[max(0, len(seen) - len(looking_for) + 1) :]
+                    tail = seen[max(0, len(seen) - longest + 1) :]
             if session.generation == generation and not session.closing:
                 self._notify(self._on_output, session.id, data)  # 신호도 지우지 않고 그대로 넘긴다
 

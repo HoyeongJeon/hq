@@ -458,27 +458,61 @@ def test_input_typed_before_the_ready_signal_is_held_then_sent_in_typed_order():
     assert out == [(SID, "Windows PowerShell"), (SID, TITLE)]  # 출력은 신호까지 그대로 넘긴다
 
 
-def test_a_ready_signal_split_across_reads_still_counts():
+@pytest.mark.parametrize(
+    "frame",
+    [f"\x1b]0;{MARKER}\x1b\\", f"\x1b]0;{MARKER}\x07", f"\x1b]2;{MARKER}\x1b\\", f"\x1b]2;{MARKER}\x07"],
+    ids=["osc0-st", "osc0-bel", "osc2-st", "osc2-bel"],
+)
+def test_the_ready_signal_is_the_marker_as_the_whole_title(frame):
     spawn = FakeSpawner()
-    manager, out, _ = gated(spawn)
+    manager, _, _ = gated(spawn)
     manager.open(SID, "s1", ["ps"], 80, 24)
     manager.write(SID, "x")
-    for ch in MARKER[:-1]:  # 처음부터 한 글자씩 나눠 읽혀도 이어서 본다
-        spawn.ptys[0].feed(ch)
-    assert wait_for(lambda: len(out) == len(MARKER) - 1)
-    assert spawn.ptys[0].written == []
-    spawn.ptys[0].feed(MARKER[-1])
+    spawn.ptys[0].feed(frame)
     assert wait_for(lambda: spawn.ptys[0].written == ["x"])
 
 
-def test_text_that_only_resembles_the_ready_signal_opens_nothing():
+@pytest.mark.parametrize(
+    "chunks",
+    [list(TITLE), ["y" * 5000 + TITLE[:3], TITLE[3:] + "z"]],
+    ids=["one-char-at-a-time", "after-a-long-chunk"],
+)
+def test_a_ready_signal_split_across_reads_still_counts(chunks):
     spawn = FakeSpawner()
     manager, out, _ = gated(spawn)
     manager.open(SID, "s1", ["ps"], 80, 24)
     manager.write(SID, "x")
-    spawn.ptys[0].feed(MARKER[:-1] + "!")
-    spawn.ptys[0].feed("!" + MARKER[1:])
-    assert wait_for(lambda: len(out) == 2)
+    for chunk in chunks[:-1]:
+        spawn.ptys[0].feed(chunk)
+    assert wait_for(lambda: len(out) == len(chunks) - 1)
+    assert spawn.ptys[0].written == []
+    spawn.ptys[0].feed(chunks[-1])
+    assert wait_for(lambda: spawn.ptys[0].written == ["x"])
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [MARKER],  # 맨 글자. 제한 언어 모드라 신호가 없는 채 접속된 원격 프롬프트가 별명을 찍은 것처럼
+        [f"[10.0.1.21]: [{MARKER}] PS C:\\> "],
+        [MARKER[:-1] + "!", "!" + MARKER[1:]],
+        [f"\x1b]0;{MARKER}"],  # 끝나지 않은 제목
+        [f"\x1b]0;{MARKER}x\x07"],  # 제목이 신호만으로 되어 있지 않다
+        [f"\x1b]0;x{MARKER}\x07"],
+        [f"\x1b]1;{MARKER}\x07"],  # 제목이 아닌 OSC(아이콘 이름)
+        [f"\x1b[0;{MARKER}\x07"],  # OSC가 아닌 CSI
+    ],
+    ids=["bare", "in-a-prompt", "look-alike", "unterminated", "suffix", "prefix", "osc1", "csi"],
+)
+def test_the_marker_outside_a_title_of_its_own_opens_nothing(chunks):
+    spawn = FakeSpawner()
+    manager, out, _ = gated(spawn)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "x")
+    for chunk in chunks:
+        spawn.ptys[0].feed(chunk)
+    assert wait_for(lambda: len(out) == len(chunks))
+    time.sleep(0.05)
     assert spawn.ptys[0].written == []
 
 
@@ -504,7 +538,7 @@ def test_a_write_racing_the_flush_waits_its_turn():
     manager.open(SID, "s1", ["ps"], 80, 24)
     for key in ("1", "2", "3"):
         manager.write(SID, key)
-    pty.feed(MARKER)
+    pty.feed(TITLE)
     assert pty.entered.wait(2)  # 읽기 스레드가 쥐고 있던 입력을 보내는 중이다
     late = threading.Thread(target=manager.write, args=(SID, "4"))
     late.start()
@@ -544,7 +578,7 @@ def test_a_ready_signal_after_the_timeout_releases_nothing():
     manager.write(SID, "x")
     assert wait_for(lambda: pty.terminated)
     manager.write(SID, "y")
-    pty.feed(MARKER)
+    pty.feed(TITLE)
     assert wait_for(lambda: out)
     manager.write(SID, "z")  # 늦게 온 신호가 문을 다시 열지 않았다
     pty.finish(5)
@@ -584,7 +618,7 @@ def test_reconnect_holds_input_until_the_new_process_signals_ready():
     manager, _, exits = gated(spawn)
     manager.open(SID, "s1", ["ps"], 80, 24)
     manager.write(SID, "a")
-    spawn.ptys[0].feed(MARKER)
+    spawn.ptys[0].feed(TITLE)
     assert wait_for(lambda: spawn.ptys[0].written == ["a"])
     spawn.ptys[0].finish(20)
     assert wait_for(lambda: exits)
@@ -592,7 +626,7 @@ def test_reconnect_holds_input_until_the_new_process_signals_ready():
     manager.write(SID, "b")
     time.sleep(0.05)
     assert spawn.ptys[1].written == []
-    spawn.ptys[1].feed(MARKER)
+    spawn.ptys[1].feed(TITLE)
     assert wait_for(lambda: spawn.ptys[1].written == ["b"])
     assert spawn.ptys[0].written == ["a"]
 
@@ -623,7 +657,7 @@ def test_input_and_resize_sent_while_reconnect_swaps_the_process_reach_the_new_o
     manager.reconnect(SID, ["ps2"], 80, 24)
     assert spawn.calls[-1] == (["ps2"], 50, 132)
     if marker is not None:
-        spawn.ptys[1].feed(marker)
+        spawn.ptys[1].feed(TITLE)
     assert wait_for(lambda: spawn.ptys[1].written == ["x"])
     assert spawn.ptys[0].written == []
 
@@ -671,7 +705,7 @@ def test_a_chunk_with_anything_besides_terminal_replies_is_held(chunk):
     manager.open(SID, "s1", ["ps"], 80, 24)
     manager.write(SID, chunk)
     assert spawn.ptys[0].written == []
-    spawn.ptys[0].feed(MARKER)
+    spawn.ptys[0].feed(TITLE)
     assert wait_for(lambda: spawn.ptys[0].written == [chunk])
 
 
@@ -686,7 +720,7 @@ def test_held_input_keeps_only_whole_writes_up_to_the_first_that_does_not_fit(ca
     manager.write(SID, "bc")  # 들어간다(2자 남음)
     manager.write(SID, "def\r")  # 들어가지 않는다: 통째로 버린다
     manager.write(SID, "g")  # 자리는 있지만 앞 입력을 버렸으므로 버린다
-    spawn.ptys[0].feed(MARKER)
+    spawn.ptys[0].feed(TITLE)
     assert wait_for(lambda: spawn.ptys[0].written == ["a" * (limit - 4), "bc"])
     time.sleep(0.05)
     assert spawn.ptys[0].written == ["a" * (limit - 4), "bc"]
@@ -702,7 +736,7 @@ def test_a_write_that_exactly_fills_the_held_input_is_kept():
     manager.open(SID, "s1", ["ps"], 80, 24)
     manager.write(SID, "a" * (limit - 2))
     manager.write(SID, "bc")
-    spawn.ptys[0].feed(MARKER)
+    spawn.ptys[0].feed(TITLE)
     assert wait_for(lambda: spawn.ptys[0].written == ["a" * (limit - 2), "bc"])
 
 

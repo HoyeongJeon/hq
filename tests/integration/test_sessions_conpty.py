@@ -182,6 +182,15 @@ pty.close()
 """
 
 
+def test_a_program_that_cannot_start_raises_oserror(tmp_path):
+    # 백신이 실행을 막을 때처럼 CreateProcess가 실패하면 winpty는 WinptyError를 던진다. 창구(bridge)가 한 가지로
+    # 받아 안내하도록 OSError로 바꿔 던진다(원래 메시지는 남긴다).
+    fake = tmp_path / "not-a-program.exe"
+    fake.write_text("이건 실행 파일이 아니다", encoding="utf-8")
+    with pytest.raises(OSError, match=r"\S"):
+        spawn_conpty([str(fake)], 24, 80)
+
+
 def test_a_session_leaves_hq_without_a_listening_port():
     # 다른 테스트가 남긴 소켓이 섞이지 않게 새 프로세스에서 띄우고, 그 프로세스의 LISTEN 포트만 본다.
     result = subprocess.run(
