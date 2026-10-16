@@ -9,7 +9,7 @@ from fakes import FakeSpawner, wait_for
 from openpyxl import Workbook
 
 from hq.bootstrap import READY_MARKER
-from hq.bridge import Bridge, close_requested, shutdown, start_pump
+from hq.bridge import Bridge, close_all_sessions, close_requested, shutdown, start_pump
 from hq.excel import HEADERS
 from hq.inventory import Inventory
 from hq.secret_store import SecretStore
@@ -634,6 +634,32 @@ def test_close_needs_confirmation_only_with_open_tabs(make):
     assert "exit\r" in h.spawn.ptys[0].written
     assert close_requested(h.bridge) is True
     assert h.bridge.open_session("f" * 32, server["id"], 80, 24)["ok"] is False  # 끝내는 중에는 새 탭을 열지 않는다
+
+
+def test_a_second_shutdown_waits_for_the_one_still_closing_tabs(make):
+    # quit이 탭을 닫는 사이 창이 닫히면 main도 shutdown을 부른다. 그것이 먼저 돌아오면 프로세스가 닫기 도중에 끝난다
+    spawner = FakeSpawner(exit_on_exit=False)  # exit에 끝나지 않는 셸: 닫기가 close_timeout까지 걸린다
+    h = make(spawn=spawner, close_timeout=0.6)
+    server = h.server()
+    assert h.bridge.open_session(SID, server["id"], 80, 24) == {"ok": True}
+    quitting = threading.Thread(target=h.bridge.quit)
+    quitting.start()
+    assert wait_for(lambda: "\x03" in spawner.ptys[0].written)  # quit이 탭을 닫는 중
+    shutdown(h.bridge)
+    finished = spawner.ptys[0].closed
+    quitting.join(5)
+    assert finished and spawner.ptys[0].terminated
+
+
+def test_close_all_sessions_closes_every_tab_but_keeps_taking_new_ones(make):
+    h = make()
+    server = h.server()
+    h.bridge.open_session(SID, server["id"], 80, 24)
+    h.bridge.open_session("d" * 32, server["id"], 80, 24)
+    assert sorted(close_all_sessions(h.bridge)) == sorted([SID, "d" * 32])
+    assert all(pty.closed for pty in h.spawn.ptys)
+    assert close_requested(h.bridge) is True
+    assert h.bridge.open_session("f" * 32, server["id"], 80, 24) == {"ok": True}
 
 
 def test_passwords_never_reach_the_log(make, tmp_path, caplog):

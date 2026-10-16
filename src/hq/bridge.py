@@ -6,7 +6,7 @@ pywebview는 js_api로 넘긴 객체의 공개 메서드를 window.pywebview.api
 
 pywebview는 화면이 부른 함수마다 스레드를 따로 띄우므로 메서드 여러 개가 동시에 돌 수 있다.
 
-창의 수명에 관한 함수(start_pump, close_requested, shutdown)는 화면에 내놓지 않으려고 메서드가
+창의 수명에 관한 함수(start_pump, close_requested, close_all_sessions, shutdown)는 화면에 내놓지 않으려고 메서드가
 아니라 모듈 함수로 둔다.
 """
 
@@ -96,6 +96,7 @@ class Bridge:
         self._lock = threading.Lock()  # _tabs와 그 안의 _Tab을 지킨다
         self._emit_lock = threading.Lock()  # 출력 묶음과 끝남 알림이 순서대로 화면에 가게 한다
         self._stop = threading.Event()  # shutdown: 펌프를 멈추고 새 탭을 받지 않는다
+        self._shutdown_lock = threading.Lock()  # 늦게 부른 shutdown은 먼저 시작한 것이 탭을 다 닫을 때까지 기다린다
         self._quitting = False
 
     # ---------- 서버 목록 ----------
@@ -521,7 +522,20 @@ def close_requested(bridge: Bridge) -> bool:
     return False
 
 
+def close_all_sessions(bridge: Bridge) -> list[str]:
+    """모든 탭을 동시에 닫고 그 id 목록을 돌려준다. 새 탭은 계속 받는다.
+
+    화면이 새로 읽혀 탭을 더는 보일 수 없을 때 부른다.
+    """
+    return bridge._close_tabs(lambda _sid, _tab: True)
+
+
 def shutdown(bridge: Bridge) -> None:
-    """펌프를 멈추고 새 탭을 받지 않으며, 모든 탭을 동시에 닫는다(최대 close_timeout초). 여러 번 불러도 된다."""
-    bridge._stop.set()
-    bridge._close_tabs(lambda _sid, _tab: True)
+    """펌프를 멈추고 새 탭을 받지 않으며, 모든 탭을 동시에 닫는다(최대 close_timeout초). 여러 번 불러도 된다.
+
+    다른 스레드가 이미 닫는 중이면 그것이 끝날 때까지 기다린다. quit이 탭을 닫는 사이 창이 닫히면 main이 곧바로
+    부르는데, 먼저 돌아오면 프로세스가 Ctrl+C·exit를 보내던 중에 끝나 서버 세션이 유휴 시간까지 남는다.
+    """
+    with bridge._shutdown_lock:
+        bridge._stop.set()
+        close_all_sessions(bridge)

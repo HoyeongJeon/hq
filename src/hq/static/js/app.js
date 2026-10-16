@@ -4,6 +4,10 @@
 (function () {
   'use strict';
 
+  // 창에 끌어다 놓은 파일이나 링크로 WebView2가 다른 페이지로 넘어가지 않게 한다(spec 8.2). 넘어가면 탭이 사라지고
+  // 세션은 숨은 채 남는다. hq가 WebView2의 AllowExternalDrop도 끄지만, WebView2 버전에 기대지 않는 두 번째 겹이다
+  for (const type of ['dragover', 'drop']) window.addEventListener(type, (event) => event.preventDefault());
+
   const L = window.HQ;
   const $ = (selector) => document.querySelector(selector);
   const USERNAME_HINT = '서버의 로컬 계정. 예) Administrator, opsadmin';

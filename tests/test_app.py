@@ -23,14 +23,19 @@ SERVER = {"name": "WEB-TEST-01", "nickname": "시험", "host": "192.0.2.10", "gr
           "memo": ""}
 FAST = {"poll_interval": 0.01, "drain_delay": 0.02, "close_timeout": 0.3}
 APP_JS = Path(paths.resource("static/js/app.js"))
-
-
-def public_api():
-    return {name for name in dir(Bridge) if not name.startswith("_") and callable(getattr(Bridge, name))}
+# spec 16의 표: 화면이 부를 수 있는 함수는 이것뿐이다
+SPEC_API = {"list_servers", "add_server", "update_server", "set_password", "delete_server", "probe",
+            "save_excel_template", "preview_excel", "apply_excel", "missing_trusted_hosts", "add_trusted_hosts",
+            "server_setup_script", "get_settings", "save_settings", "open_session", "send_input", "resize",
+            "reconnect", "close_session", "quit"}
 
 
 def app_warnings(caplog):
     return [r for r in caplog.records if r.name == "hq.app" and r.levelno == logging.WARNING]
+
+
+def app_errors(caplog):
+    return [r for r in caplog.records if r.name == "hq.app" and r.levelno == logging.ERROR]
 
 
 # ---------- 단일 실행 ----------
@@ -264,19 +269,174 @@ def test_only_the_screen_api_is_exposed_and_private_parts_stay_out_of_reach(tmp_
     window = webview.Window("hq-test", "HQ", INDEX)  # pywebview 6.2.1의 진짜 창 객체(GUI는 띄우지 않는다)
     try:
         app.expose_api(window, bridge)
-        assert set(window._functions) == public_api()
-        assert not [name for name in window._functions if name.startswith("_")]
+        # 내놓은 것 = spec 16의 표 = 화면이 부르는 것(window.pywebview.api.<이름>)
+        called = set(re.findall(r"\bapi\.(\w+)\(", APP_JS.read_text(encoding="utf-8")))
+        assert set(window._functions) == SPEC_API == called
         for name, func in window._functions.items():
             assert func.__name__ == name
             assert func.__self__ is bridge
-        # 화면이 부르는 이름은 모두 내놓은 것이다(window.pywebview.api.<이름>)
-        called = set(re.findall(r"\bapi\.(\w+)\(", APP_JS.read_text(encoding="utf-8")))
-        assert called and called <= set(window._functions)
         # 화면 스크립트가 pywebview의 호출 경로로 밑줄 속성을 불러도 닿지 않는다(js_api를 주면 닿는다)
         with caplog.at_level(logging.ERROR, logger="pywebview"):
             js_bridge_call(window, "_sessions.open", ["d" * 32, "x", ["cmd.exe", "/c", "calc"], 80, 24], "1")
         assert spawner.calls == []
         assert "does not exist" in caplog.text
+    finally:
+        shutdown(bridge)
+
+
+# ---------- hq 화면 지키기 (spec 8.2) ----------
+
+
+class FakeControl:
+    """WinForms WebView2 컨트롤에서 PageGuard가 쓰는 것만."""
+
+    def __init__(self):
+        self.AllowExternalDrop = True
+        self.NavigationStarting = FakeEvent()
+
+    def navigate(self, uri):
+        """WebView2처럼 이동을 시작하기 전에 NavigationStarting을 부른다. 이동하면 True."""
+        args = SimpleNamespace(Uri=uri, Cancel=False)
+        for handler in self.NavigationStarting.handlers:
+            handler(self, args)
+        return not args.Cancel
+
+
+def guarded_window(renderer="edgechromium"):
+    return SimpleNamespace(native=SimpleNamespace(webview=FakeControl()), gui=SimpleNamespace(renderer=renderer))
+
+
+def test_the_window_refuses_drops_and_cancels_navigation_away_before_it_starts(caplog):
+    window = guarded_window()
+    app.PageGuard(INDEX, bridge=None).before_show(window)
+    control = window.native.webview
+    assert control.AllowExternalDrop is False  # 창에 끌어다 놓은 파일·링크로 페이지가 바뀌지 않는다
+    assert app_errors(caplog) == []
+    for uri in ["http://192.0.2.1/", "https://example.com/", "about:blank", "data:text/html,x",
+                "file:///C:/Users/me/Downloads/dropped.html", "file:///C:/hq/static/other.html"]:
+        assert control.navigate(uri) is False, uri
+    assert len(app_warnings(caplog)) == 6
+    for uri in [INDEX, INDEX + "#servers", "file:///c:/HQ/static/index.html"]:
+        assert control.navigate(uri) is True, uri
+
+
+def test_a_navigation_that_cannot_be_checked_is_cancelled(caplog):
+    window = guarded_window()
+    app.PageGuard(INDEX, bridge=None).before_show(window)
+
+    class BrokenArgs:
+        Cancel = False
+
+        @property
+        def Uri(self):  # noqa: N802 (.NET 속성 이름)
+            raise RuntimeError("주소 없음")
+
+    args = BrokenArgs()
+    (handler,) = window.native.webview.NavigationStarting.handlers
+    handler(window.native.webview, args)
+    assert args.Cancel is True
+    (warning,) = app_warnings(caplog)
+    assert warning.exc_info is not None
+
+
+def test_a_renderer_other_than_webview2_is_logged_as_an_error(caplog):
+    # pywebview는 WebView2를 쓰지 못하면 말없이 MSHTML(IE)로 띄운다
+    app.PageGuard(INDEX, bridge=None).before_show(guarded_window(renderer="mshtml"))
+    (error,) = app_errors(caplog)
+    assert "mshtml" in error.getMessage()
+
+
+def test_a_window_that_cannot_be_guarded_is_logged_as_an_error(caplog):
+    app.PageGuard(INDEX, bridge=None).before_show(SimpleNamespace(native=None, gui=SimpleNamespace(
+        renderer="edgechromium")))
+    (error,) = app_errors(caplog)
+    assert error.exc_info is not None
+
+
+class PageWindow(FakeWindow):
+    """문서가 있는 창. href는 문서의 실제 주소(location.href), url은 pywebview가 아는 주소(get_current_url).
+    문서마다 JS 전역 변수가 새로 생긴다. reload()는 문서를 새로 읽는다(전역 변수가 사라진다). load_url은 기록만 한다."""
+
+    def __init__(self, url=INDEX, href=None):
+        super().__init__(url=url)
+        self.href = href or url
+        self.js_globals = {}
+
+    def evaluate_js(self, script):
+        match = re.fullmatch(r"\[location\.href, window\.(\w+) \|\| \(window\.\1 = '(\w+)'\)\]", script)
+        assert match, script
+        return [self.href, self.js_globals.setdefault(match.group(1), match.group(2))]
+
+    def reload(self):
+        self.js_globals = {}
+
+
+def test_reverting_stops_when_it_keeps_happening_and_says_so_once(caplog):
+    # 주소 비교가 어긋나면(예: 폴더 이름의 #을 풀어서 알려 줌) 되돌린 hq 화면도 남의 주소로 보여 끝없이 되돌린다
+    now = [0.0]
+    guard = app.PageGuard(INDEX, bridge=None, clock=lambda: now[0])
+    window = PageWindow(url="file:///C:/hq/static/elsewhere.html")  # 되돌려도 주소가 그대로다
+    for _ in range(10):
+        guard.on_loaded(window)
+        now[0] += 0.5
+    assert window.loaded == [INDEX] * app.REVERT_LIMIT
+    assert len(app_errors(caplog)) == 1
+
+
+def test_occasional_reverts_keep_working():
+    now = [0.0]
+    guard = app.PageGuard(INDEX, bridge=None, clock=lambda: now[0])
+    window = PageWindow(url="http://192.0.2.1/")
+    for _ in range(app.REVERT_LIMIT * 2):
+        guard.on_loaded(window)
+        now[0] += app.REVERT_WINDOW
+    assert window.loaded == [INDEX] * (app.REVERT_LIMIT * 2)
+
+
+def test_a_refused_new_window_request_does_not_reload_the_page(tmp_path):
+    # pywebview는 새 창 요청(window.open)을 컨트롤의 Source로 넘긴다. 이동을 막아도 pywebview가 아는 주소는 막힌
+    # 주소로 남는다. 그것만 믿으면 멀쩡한 hq 화면을 다시 읽어 열린 탭을 잃는다(실제 창에서 확인). 문서의 주소를 본다
+    spawner = FakeSpawner()
+    bridge = make_bridge(tmp_path, spawner)
+    try:
+        server = bridge.add_server(dict(SERVER), PASSWORD)["server"]
+        assert bridge.open_session("e" * 32, server["id"], 80, 24) == {"ok": True}
+        guard = app.PageGuard(INDEX, bridge)
+        window = PageWindow()
+        guard.on_loaded(window)
+        window.url = "http://127.0.0.1:9/"  # 막힌 새 창 요청 뒤: 문서(href)는 그대로 hq 화면이다
+        guard.on_loaded(window)  # 막힌 이동 뒤 API를 다시 심으며 부른 loaded
+        assert window.loaded == []
+        assert not spawner.ptys[0].closed
+    finally:
+        shutdown(bridge)
+
+
+def test_without_the_document_address_the_guard_uses_the_window_address(caplog):
+    window = FakeWindow(url="http://192.0.2.1/")  # evaluate_js가 없다: 문서를 읽지 못한다
+    app.PageGuard(INDEX, bridge=None).on_loaded(window)
+    assert window.loaded == [INDEX]
+
+
+def test_a_second_load_of_the_hq_page_closes_every_session(tmp_path, caplog):
+    spawner = FakeSpawner()
+    bridge = make_bridge(tmp_path, spawner)
+    try:
+        server = bridge.add_server(dict(SERVER), PASSWORD)["server"]
+        assert bridge.open_session("e" * 32, server["id"], 80, 24) == {"ok": True}
+        guard = app.PageGuard(INDEX, bridge)
+        window = PageWindow()
+        guard.on_loaded(window)  # 처음 읽힌 hq 화면
+        guard.on_loaded(window)  # 막힌 이동 뒤 pywebview가 같은 문서에 API를 다시 심었다
+        assert not spawner.ptys[0].closed
+        assert app_warnings(caplog) == []
+        window.reload()  # 그래도 화면이 새로 읽혔다: 탭은 사라졌고 세션은 보이지 않게 남는다
+        guard.on_loaded(window)
+        assert spawner.ptys[0].closed
+        (warning,) = app_warnings(caplog)
+        assert "1" in warning.getMessage()
+        # 끝내는 것이 아니다: 새 화면에서 다시 열 수 있다
+        assert bridge.open_session("f" * 32, server["id"], 80, 24) == {"ok": True}
     finally:
         shutdown(bridge)
 
@@ -303,7 +463,9 @@ class FakeAppWindow:
         self.title = title
         self.url = url
         self.options = options
-        self.events = SimpleNamespace(closing=FakeEvent(), loaded=FakeEvent())
+        self.events = SimpleNamespace(closing=FakeEvent(), loaded=FakeEvent(), before_show=FakeEvent())
+        self.native = SimpleNamespace(webview=FakeControl())  # pywebview가 창을 만들며 채운다
+        self.gui = SimpleNamespace(renderer="edgechromium")
         self.api = {}
         self.scripts = []
         self.destroyed = False
@@ -330,7 +492,7 @@ class FakeWebview:
     FileDialog = webview.FileDialog
 
     def __init__(self, user=None):
-        self.settings = {"ALLOW_DOWNLOADS": True, "SHOW_DEFAULT_MENUS": True}
+        self.settings = {"ALLOW_DOWNLOADS": True, "SHOW_DEFAULT_MENUS": True, "OPEN_EXTERNAL_LINKS_IN_BROWSER": True}
         self.windows = []
         self.started = []
         self._user = user  # 창이 떠 있는 동안 사용자가 하는 일. 돌아오면 창이 닫힌 것이다
@@ -342,6 +504,7 @@ class FakeWebview:
     def start(self, func=None, args=None, **options):
         self.started.append((func, args, options))
         func(*args)
+        self.windows[0].events.before_show.set()  # pywebview: 창을 만든 뒤 보이기 전에 GUI 스레드에서
         if self._user:
             self._user(self.windows[0])
 
@@ -392,9 +555,16 @@ def test_main_opens_only_the_hq_page_and_shuts_down_after_the_window_closes(laun
     assert window.url == paths.index_url()
     assert window.url.startswith("file:///")  # pywebview가 내부 웹 서버를 띄우지 않는다
     assert "js_api" not in window.options  # 화면 API는 expose로만 내놓는다
-    assert set(window.api) == public_api()
+    assert set(window.api) == SPEC_API
     assert window.events.loaded.handlers and window.events.closing.handlers
+    # 보이기 전에 끌어다 놓기를 끄고 이동 막기를 걸었다
+    control = window.native.webview
+    assert control.AllowExternalDrop is False
+    assert control.navigate("about:blank") is False
+    assert control.navigate(paths.index_url()) is True
     assert fake.settings["ALLOW_DOWNLOADS"] is False
+    # 새 창 요청(window.open, target=_blank)은 기본 브라우저로 넘기지 않고 같은 창의 이동으로 받아 막는다
+    assert fake.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] is False
     ((func, args, options),) = fake.started
     assert func is start_pump
     assert args == (launch.bridges[0],)
@@ -435,6 +605,28 @@ def test_closing_with_an_open_tab_asks_the_page_and_quit_closes_everything(launc
     assert pty.closed
     assert wait_for(lambda: not pump_running())
     assert PASSWORD not in launch.log()
+
+
+def test_pressing_x_again_while_quitting_still_waits_for_the_tabs_to_close(launch):
+    # quit이 탭을 닫는 동안(최대 2초) X를 또 누르면 창은 바로 닫힌다. 그래도 main은 탭이 다 닫힐 때까지 기다린다.
+    # 먼저 끝나 버리면 Ctrl+C·exit를 보내던 중에 프로세스가 사라져 서버 세션이 유휴 시간까지 남는다
+    launch.spawner._exit_on_exit = False  # exit에 끝나지 않는 셸: 닫기가 close_timeout까지 걸린다
+    seen = {}
+
+    def user(window):
+        server = window.api["add_server"](dict(SERVER), PASSWORD)["server"]
+        window.api["open_session"]("a" * 32, server["id"], 80, 24)
+        seen["quit"] = threading.Thread(target=window.api["quit"])
+        seen["quit"].start()
+        seen["closing"] = wait_for(lambda: "\x03" in launch.spawner.ptys[0].written)
+        seen["cancelled"] = window.events.closing.set()  # X를 한 번 더
+
+    launch(FakeWebview(user))
+    (pty,) = launch.spawner.ptys
+    finished = pty.closed  # main이 돌아온 그 순간에 탭이 이미 다 닫혀 있어야 한다
+    seen["quit"].join(5)
+    assert seen["closing"] and seen["cancelled"] is False
+    assert finished and pty.terminated
 
 
 def test_an_uncaught_error_in_any_thread_reaches_the_log(launch, monkeypatch):
