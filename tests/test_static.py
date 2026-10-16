@@ -120,6 +120,19 @@ def test_an_open_dialog_makes_everything_behind_it_inert():
     assert "event.key === 'Tab'" in body  # 대화 상자의 처음과 끝에서 포커스가 문서 밖으로 나가지 않게 한다
 
 
+def test_a_replaced_dialog_can_never_close_the_one_that_replaced_it():
+    # 버튼 동작(run)을 기다리는 사이에 창이 바뀌면, 끝난 동작의 close가 새 창을 숨기고 그 키 처리기를 남겼다
+    body = function_body(read("js/app.js"), "function openModal({ title, body, buttons, wide })")
+    close = re.search(r"function close\(value, replaced = false\) \{\n(.*?)\n      \}\n", body, re.S)
+    assert close
+    steps = close.group(1).strip().splitlines()
+    assert steps[0].strip() == "if (closeCurrentModal !== close) return false; // 이미 닫혔거나 다른 창으로 바뀌었다"
+    assert steps[1].strip() == "closeCurrentModal = null;"
+    assert "document.removeEventListener('keydown', onKey, true);" in close.group(1)
+    assert steps[-1].strip() == "return true;"
+    assert "if (close(value) && b.after) b.after();" in body  # 닫지 못한 창의 다음 동작은 하지 않는다
+
+
 def test_a_rejected_session_call_takes_the_normal_failure_path():
     text = read("js/app.js")
     body = function_body(text, "async function startSession(tab, mode)")

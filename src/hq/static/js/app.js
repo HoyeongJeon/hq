@@ -61,17 +61,21 @@
     return new Promise((resolve) => {
       const overlay = $('#modal');
       let primary = null;
+      // 한 번만, 그리고 지금 떠 있는 창일 때만 닫는다. 버튼 동작(run)을 기다리는 사이에 다른 창으로 바뀌었으면, 끝난
+      // 동작의 close는 아무것도 하지 않는다(새 창을 숨기거나 새 창의 키 처리기를 남기지 않는다). 닫았으면 true
       function close(value, replaced = false) {
+        if (closeCurrentModal !== close) return false; // 이미 닫혔거나 다른 창으로 바뀌었다
+        closeCurrentModal = null;
+        document.removeEventListener('keydown', onKey, true);
         overlay.hidden = true;
         overlay.replaceChildren();
-        document.removeEventListener('keydown', onKey, true);
-        closeCurrentModal = null;
         if (!replaced) {
           $('.app').inert = false;
           const tab = tabById(state.active);
           if (tab) focusTerminal(tab); // 마지막 창이 닫혔다. 포커스를 지금 탭의 터미널로 돌려준다
         }
         resolve(value);
+        return true;
       }
       function onKey(event) {
         if (event.key === 'Escape') {
@@ -110,8 +114,7 @@
             }
             if (value === false) return;
           }
-          close(value);
-          if (b.after) b.after();
+          if (close(value) && b.after) b.after();
         });
         if (b.primary) primary = button;
         return button;
