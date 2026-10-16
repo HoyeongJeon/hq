@@ -54,6 +54,17 @@ def test_broken_session_exits_20_and_typed_ahead_command_never_runs(tmp_path, ex
     assert not marker.exists()
 
 
+def test_control_without_the_safety_net_the_typed_ahead_command_runs(tmp_path):
+    # 대조군: 위 테스트와 같은 도구, 같은 입력. 안전장치 대신 그냥 돌아오는 prompt를 두면 미리 친 명령이
+    # 실제로 실행된다. 그래서 위 테스트의 "실행되지 않았다"가 입력이 전달되지 않아서 나온 결과일 수 없다.
+    marker = tmp_path / "ran-locally.txt"
+    typed = f"New-Item -ItemType File -Path '{marker}' | Out-Null\r"
+    script = "function global:prompt { 'PS> ' }\nStart-Sleep -Milliseconds 1500\n"
+    output, code = run_pty(encoded_argv(script), writes=[(0.3, typed), (0.4, "exit\r")])
+    assert code == 0, output
+    assert marker.exists(), output
+
+
 def test_opened_session_means_the_user_left_and_exits_0():
     output, code = run_pty(encoded_argv(_safety("Opened")))
     assert code == 0, output

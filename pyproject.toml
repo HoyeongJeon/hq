@@ -34,5 +34,6 @@ ignore = ["RUF001", "RUF003"]  # 한글 문자열·주석의 전각/특수 문�
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]  # tests/integration의 테스트도 tests/fakes.py를 가져다 쓴다
 timeout = 120
 markers = ["integration: 실제 powershell.exe·ConPTY를 띄우는 테스트"]
