@@ -154,6 +154,18 @@ def test_failure_logs_the_exit_code_and_step_as_a_warning(caplog, code, step):
     assert step in record.getMessage()
 
 
+def test_a_launch_failure_is_logged_and_reported_as_failed(caplog):
+    # ShellExecuteExW가 취소가 아닌 이유로 실패하면 WinError(OSError)를 던진다(예: 백신이 막아 액세스 거부).
+    def run(file, parameters):
+        raise ctypes.WinError(5)
+
+    with caplog.at_level(logging.DEBUG, logger="hq.trustedhosts"):
+        assert add_trusted_hosts(["192.0.2.21"], run=run) is AddResult.FAILED
+    [record] = caplog.records
+    assert (record.name, record.levelno) == ("hq.trustedhosts", logging.WARNING)
+    assert record.exc_info is not None and isinstance(record.exc_info[1], OSError)
+
+
 @pytest.mark.parametrize("code", [None, 0])
 def test_success_and_cancel_log_no_warning(caplog, code):
     with caplog.at_level(logging.DEBUG, logger="hq.trustedhosts"):

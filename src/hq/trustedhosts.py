@@ -86,7 +86,11 @@ def add_trusted_hosts(hosts: Iterable[str], run: Callable[[str, str], int | None
     if not wanted:
         return AddResult.OK
     argv = encoded_argv(build_add_script(wanted), no_exit=False)
-    code = (run or run_elevated)(argv[0], subprocess.list2cmdline(argv[1:]))
+    try:
+        code = (run or run_elevated)(argv[0], subprocess.list2cmdline(argv[1:]))
+    except OSError:  # 취소가 아닌 이유로 띄우지 못함(예: 백신이 막아 액세스 거부)
+        _log.warning("TrustedHosts 추가 스크립트를 관리자 권한으로 띄우지 못함", exc_info=True)
+        return AddResult.FAILED
     if code is None:
         return AddResult.CANCELLED
     if code == 0:
