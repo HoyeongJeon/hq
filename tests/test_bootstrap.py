@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import subprocess
 
 import pytest
@@ -122,6 +123,13 @@ def test_prelude_holds_the_safety_net_and_nothing_that_connects():
     assert "function Get-HqExitCode" in text
     assert "New-PSSession" not in text
     assert "__HQ_PARAMS__" not in text
+    # Ctrl+C(PipelineStoppedException)는 catch를 건너뛰고 finally만 돈다. 그래서 종료는 finally 안에서만 하고,
+    # 그 코드는 try가 무엇을 하기도 전에 정해져 있어야 한다.
+    start = text.index("function global:prompt")
+    safety_net = text[start : text.index("\n}\n", start)]
+    assert safety_net.count("[Environment]::Exit") == 1
+    assert re.search(r"\}\s*finally\s*\{\s*\[Environment\]::Exit\(\$code\)\s*\}", safety_net), safety_net
+    assert safety_net.index("$code = 1") < safety_net.index("try {")
 
 
 def test_template_has_one_placeholder_and_the_safety_net_first():

@@ -10,8 +10,7 @@ function global:prompt {
             if ("$($s.State)" -eq 'Opened') { $code = 0 } else { $code = 20 }
             Remove-PSSession -Session $s -ErrorAction SilentlyContinue
         }
-    } catch { }
-    [Environment]::Exit($code)
+    } catch { } finally { [Environment]::Exit($code) }
 }
 
 # 세션 만들기 실패를 hq 종료 코드로 바꾼다.

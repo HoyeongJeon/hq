@@ -30,19 +30,26 @@ def test_bootstrap_reads_back_every_parameter():
     assert result.stdout.split() == ["True"] * 4, result.stderr
 
 
-def _safety(state: str | None) -> str:
+# Ctrl+C가 안전장치의 Remove-PSSession 도중에 온 것처럼: PipelineStoppedException은 catch를 건너뛰고 finally만 돈다.
+STOPPED_CLEANUP = (
+    "function global:Remove-PSSession { throw (New-Object System.Management.Automation.PipelineStoppedException) }\n"
+)
+
+
+def _safety(state: str | None, extra: str = "") -> str:
     setup = "" if state is None else f"$global:__hq_session = [pscustomobject]@{{ State = '{state}' }}\n"
-    return prelude() + setup + "Start-Sleep -Milliseconds 1500\n"
+    return prelude() + extra + setup + "Start-Sleep -Milliseconds 1500\n"
 
 
 def test_bootstrap_parses_without_errors(tmp_path):
     assert parse_errors(build_script(PARAMS), tmp_path) == []
 
 
-def test_broken_session_exits_20_and_typed_ahead_command_never_runs(tmp_path):
+@pytest.mark.parametrize("extra", ["", STOPPED_CLEANUP], ids=["normal", "cleanup-stopped"])
+def test_broken_session_exits_20_and_typed_ahead_command_never_runs(tmp_path, extra):
     marker = tmp_path / "ran-locally.txt"
     typed = f"New-Item -ItemType File -Path '{marker}' | Out-Null\r"
-    output, code = run_pty(encoded_argv(_safety("Broken")), writes=[(0.3, typed)])
+    output, code = run_pty(encoded_argv(_safety("Broken", extra)), writes=[(0.3, typed)])
     assert code == 20, output
     assert not marker.exists()
 
