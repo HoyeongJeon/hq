@@ -108,6 +108,18 @@ def test_terminals_take_focus_only_through_the_modal_aware_helper():
     assert re.search(r"requestAnimationFrame\(\(\) => \{[^}]*focusTerminal\(tab\);", activate)
 
 
+def test_an_open_dialog_makes_everything_behind_it_inert():
+    # 탭 이동(Tab, Shift+Tab)으로 뒤의 터미널이나 서버 목록에 닿으면 대화 상자에 치는 글자가 원격 셸로 간다
+    assert 'class="app"' in read("index.html")
+    body = function_body(read("js/app.js"), "function openModal({ title, body, buttons, wide })")
+    assert "closeCurrentModal(undefined, true);" in body  # 다른 창으로 바꿀 때는 뒤 화면을 잠근 채로 둔다
+    assert body.index("$('.app').inert = true;") < body.index("focusTarget.focus()")
+    # 마지막 창이 닫힐 때만 뒤 화면을 풀고 포커스를 지금 탭의 터미널로 돌려준다
+    assert re.search(r"if \(!replaced\) \{\s*\$\('\.app'\)\.inert = false;[^}]*focusTerminal\(", body)
+    assert body.count(".inert = false") == 1
+    assert "event.key === 'Tab'" in body  # 대화 상자의 처음과 끝에서 포커스가 문서 밖으로 나가지 않게 한다
+
+
 def test_a_rejected_session_call_takes_the_normal_failure_path():
     text = read("js/app.js")
     body = function_body(text, "async function startSession(tab, mode)")

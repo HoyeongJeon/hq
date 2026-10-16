@@ -54,16 +54,23 @@
   }
 
   // ---------- 대화 상자 ----------
+  // 대화 상자가 열려 있는 동안 뒤 화면(.app: 서버 목록, 탭, 터미널)은 inert로 잠근다. 포커스도 클릭도 받지 않으므로
+  // Tab으로 터미널에 닿아 대화 상자에 치려던 글자(비밀번호 포함)가 원격 셸로 가는 일이 없다
   function openModal({ title, body, buttons, wide }) {
-    if (closeCurrentModal) closeCurrentModal(undefined);
+    if (closeCurrentModal) closeCurrentModal(undefined, true); // 다른 창으로 바꾼다: 뒤 화면은 잠근 채로 둔다
     return new Promise((resolve) => {
       const overlay = $('#modal');
       let primary = null;
-      function close(value) {
+      function close(value, replaced = false) {
         overlay.hidden = true;
         overlay.replaceChildren();
         document.removeEventListener('keydown', onKey, true);
         closeCurrentModal = null;
+        if (!replaced) {
+          $('.app').inert = false;
+          const tab = tabById(state.active);
+          if (tab) focusTerminal(tab); // 마지막 창이 닫혔다. 포커스를 지금 탭의 터미널로 돌려준다
+        }
         resolve(value);
       }
       function onKey(event) {
@@ -74,6 +81,20 @@
         } else if (event.key === 'Enter' && event.target.tagName === 'INPUT' && event.target.type !== 'checkbox' && primary) {
           event.preventDefault();
           primary.click();
+        } else if (event.key === 'Tab') {
+          // 뒤 화면은 inert라 Tab이 닿지 않는다. 대화 상자의 처음과 끝에서 문서 밖으로 나가지 않도록 둘을 잇는다
+          const items = [...overlay.querySelectorAll('button, input, textarea')].filter((el) => !el.disabled);
+          if (!items.length) return;
+          const first = items[0];
+          const last = items[items.length - 1];
+          const inside = overlay.contains(document.activeElement);
+          if (event.shiftKey && (!inside || document.activeElement === first)) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && (!inside || document.activeElement === last)) {
+            event.preventDefault();
+            first.focus();
+          }
         }
       }
       const footer = h('div', { class: 'modal-actions' }, buttons.map((b) => {
@@ -98,6 +119,7 @@
       overlay.replaceChildren(h('div', { class: 'modal-card' + (wide ? ' wide' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
         h('h2', { text: title }), body, footer));
       overlay.hidden = false;
+      $('.app').inert = true;
       closeCurrentModal = close;
       document.addEventListener('keydown', onKey, true);
       const focusTarget = overlay.querySelector('input:not([type=checkbox]), textarea') || primary;
