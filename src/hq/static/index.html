@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file: 'unsafe-eval'; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: data:; font-src 'self' file: data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>HQ</title>
+<link rel="stylesheet" href="vendor/xterm/xterm.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="화면 전환">
+    <button id="rail-servers" class="rail-btn active" type="button" title="서버 목록" aria-label="서버 목록">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="4" y="3" width="16" height="7" rx="1.5"/><rect x="4" y="14" width="16" height="7" rx="1.5"/><path d="M8 6.5h.01M8 17.5h.01"/></svg>
+    </button>
+    <button id="rail-settings" class="rail-btn" type="button" title="설정" aria-label="설정">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>
+    </button>
+  </nav>
+
+  <aside class="side">
+    <section id="servers-view" class="side-view">
+      <header class="side-head">
+        <h1>서버 목록</h1>
+        <button id="refresh" class="icon-btn" type="button" title="상태 새로고침" aria-label="상태 새로고침">⟳</button>
+      </header>
+      <div id="server-list" class="server-list" role="list" aria-label="서버"></div>
+      <footer class="side-foot">
+        <div class="side-actions">
+          <button id="add-server" class="btn" type="button">+ 서버 추가</button>
+          <button id="excel" class="btn" type="button">엑셀 등록</button>
+        </div>
+        <input id="search" class="search" type="search" placeholder="Ctrl+K  서버 검색" autocomplete="off" aria-label="서버 검색">
+      </footer>
+    </section>
+    <section id="settings-view" class="side-view" hidden>
+      <header class="side-head"><h1>설정</h1></header>
+      <div id="settings-body" class="settings-body"></div>
+    </section>
+  </aside>
+
+  <main class="main">
+    <div id="banner" class="banner" role="status" hidden></div>
+    <div id="load-error" class="banner error" role="alert" hidden></div>
+    <div id="tabbar" class="tabbar" role="tablist" aria-label="열린 서버"></div>
+    <div id="panes" class="panes">
+      <div id="empty" class="empty">
+        <p>서버를 더블클릭하면 여기에 PowerShell 탭이 열립니다.</p>
+        <p class="muted">Ctrl+K 검색 · Ctrl+Tab 탭 이동 · Alt+1~9 n번째 탭</p>
+      </div>
+    </div>
+    <aside id="info" class="info" hidden></aside>
+  </main>
+</div>
+<div id="menu" class="menu" role="menu" hidden></div>
+<div id="modal" class="modal" hidden></div>
+<script src="vendor/xterm/xterm.js"></script>
+<script src="vendor/xterm/addon-fit.js"></script>
+<script src="js/logic.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
