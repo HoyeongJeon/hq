@@ -1,6 +1,6 @@
 import pytest
 
-from hq.validation import ValidationError, validate_host, validate_ipv4, validate_username
+from hq.validation import ValidationError, is_hex_id, validate_host, validate_ipv4, validate_username
 
 
 @pytest.mark.parametrize("value", ["10.0.1.21", "192.168.0.1", "web01", "web-01.corp.local", "  10.0.1.21  "])
@@ -62,3 +62,23 @@ def test_invalid_ipv4(value):
 def test_validation_error_is_a_value_error_with_korean_message():
     with pytest.raises(ValueError, match="IP/호스트"):
         validate_host("")
+
+
+def test_is_hex_id_accepts_32_lowercase_hex():
+    assert is_hex_id("0123456789abcdef0123456789abcdef")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "0123456789ABCDEF0123456789ABCDEF",
+        "0123456789abcdef0123456789abcde",
+        "0123456789abcdef0123456789abcdef0",
+        "0123456789abcdef0123456789abcdef\n",
+        "",
+        None,
+        12345678901234567890123456789012,
+    ],
+)
+def test_is_hex_id_rejects_everything_else(value):
+    assert not is_hex_id(value)

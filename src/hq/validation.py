@@ -11,6 +11,7 @@ _HOSTNAME_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _DIGITS_AND_DOTS = re.compile(r"[0-9.]+")
 _USER = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _PREFIX = re.compile(r"\.|[A-Za-z0-9._-]{1,64}")
+_HEX_ID = re.compile(r"[0-9a-f]{32}")
 
 
 class ValidationError(ValueError):
@@ -44,6 +45,11 @@ def validate_username(value: str) -> str:
     if not _USER.fullmatch(name):
         raise ValidationError(f"ID에는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)만 쓸 수 있습니다(64자 이하): {user}")
     return user
+
+
+def is_hex_id(value: object) -> bool:
+    """32자리 소문자 16진수 id(서버, 세션 등)인지. 파일 이름에 그대로 쓰므로 다른 문자는 받지 않는다."""
+    return isinstance(value, str) and _HEX_ID.fullmatch(value) is not None
 
 
 def validate_ipv4(value: str) -> str:
