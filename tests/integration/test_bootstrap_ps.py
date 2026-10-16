@@ -78,7 +78,7 @@ def test_missing_secret_exits_14(tmp_path):
     assert code == 14, output
 
 
-# (FullyQualifiedErrorId, 메시지, 기대 종료 코드). Task 6에서 실서버 표본(V3)을 더한다.
+# (FullyQualifiedErrorId, 메시지, 기대 종료 코드). 실서버 표본(V3)은 docs/verification.md에 기록했다.
 CASES = [
     ("AccessDenied,PSSessionOpenFailed", "액세스가 거부되었습니다.", 10),
     ("ServerNotTrusted,PSSessionOpenFailed", "The WinRM client cannot process the request. TrustedHosts", 12),
@@ -87,6 +87,46 @@ CASES = [
     ("WinRMOperationTimeout,PSSessionOpenFailed", "The operation has timed out.", 11),
     ("ComputerNotFound,PSSessionOpenFailed", "The network path was not found.", 11),
     ("SomethingElse,PSSessionOpenFailed", "알 수 없음", 1),
+    # V3 실서버 표본 (2026-10-16, SRV-B, 서버 OS 확인하지 않음). 메시지는 보고서 그대로이고, 서버 주소만
+    # 문서용 주소로 바꿨다(docs/verification.md).
+    # 틀린 비밀번호
+    (
+        "AccessDenied,PSSessionOpenFailed",
+        "다음 오류 때문에 원격 서버 198.51.100.20에 연결하지 못했습니다. 액세스가 거부되었습니다. "
+        "자세한 내용은 about_Remote_Troubleshooting 도움말 항목을 참조하십시오.",
+        10,
+    ),
+    # TrustedHosts 없음 (ErrorCode 1312, Negotiate 인증)
+    (
+        "1312,PSSessionOpenFailed",
+        "다음 오류 때문에 원격 서버 192.0.2.10에 연결하지 못했습니다. WinRM cannot process the request. "
+        "The following error with error code 0x8009030e occurred while using Negotiate authentication: "
+        "A specified logon session does not exist. It may already have been terminated. "
+        "This can occur if the provided credentials are not valid on the target server, "
+        "or if the server identity could not be verified. If you trust the server identity, "
+        "add the server name to the TrustedHosts list, and then retry the request. "
+        "Use winrm.cmd to view or edit the TrustedHosts list. "
+        "Note that computers in the TrustedHosts list might not be authenticated. "
+        "For more information about how to edit the TrustedHosts list, run the following command: winrm help config. "
+        "자세한 내용은 about_Remote_Troubleshooting 도움말 항목을 참조하십시오.",
+        12,
+    ),
+    # 포트 닫힘 (ErrorCode -2144108250)
+    (
+        "WinRMOperationTimeout,PSSessionOpenFailed",
+        "다음 오류 때문에 원격 서버 198.51.100.20에 연결하지 못했습니다. WinRM에서 작업을 완료할 수 없습니다. "
+        "지정한 컴퓨터 이름이 올바른지, 네트워크를 통해 컴퓨터에 액세스할 수 있는지, "
+        "WinRM에 방화벽 예외를 사용하도록 설정하고 이 컴퓨터의 액세스를 허용하는지 확인하십시오. "
+        "기본적으로 공용 프로필에 대한 WinRM 방화벽 예외에서는 동일한 로컬 서브넷 내의 원격 컴퓨터로 "
+        "액세스를 제한합니다. 자세한 내용은 about_Remote_Troubleshooting 도움말 항목을 참조하십시오.",
+        11,
+    ),
+    # 규칙 순서 (합성 표본). FQID가 정하고, 메시지는 FQID로 정해지지 않을 때만 본다.
+    ("1312,PSSessionOpenFailed", "지정된 로그온 세션이 없습니다.", 12),
+    ("WinRMOperationTimeout,PSSessionOpenFailed", "add the server name to the TrustedHosts list", 11),
+    ("SomethingElse,PSSessionOpenFailed", "add the server name to the TrustedHosts list", 12),
+    # 한도 초과는 표본이 없어 FQID를 모른다. 그래서 메시지로 다른 규칙보다 먼저 본다.
+    ("AccessDenied,PSSessionOpenFailed", "This user is allowed a maximum number of 5 concurrent shells", 13),
 ]
 
 

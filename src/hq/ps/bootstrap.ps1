@@ -15,14 +15,18 @@ function global:prompt {
 
 # 세션 만들기 실패를 hq 종료 코드로 바꾼다.
 # 10 로그인 거부, 11 응답 없음, 12 TrustedHosts 없음, 13 동시 세션 한도, 1 그 밖
+# 한국어 Windows는 메시지를 한국어로 주므로 FullyQualifiedErrorId의 쉼표 앞부분으로 정한다(V3 실서버 표본,
+# docs/verification.md). 1312는 Negotiate 인증으로 TrustedHosts에 없는 서버에 접속할 때 나온다.
+# 메시지는 FQID로 정해지지 않을 때만 본다. 한도 초과만은 표본이 없어 FQID를 모르므로 메시지로 맨 먼저 본다.
 function Get-HqExitCode {
     param($ErrorRecord)
-    $id = "$($ErrorRecord.FullyQualifiedErrorId)"
+    $kind = "$($ErrorRecord.FullyQualifiedErrorId)".Split(',')[0]
     $message = "$($ErrorRecord.Exception.Message)"
-    if ($id -like 'AccessDenied*') { return 10 }
-    if ($id -like 'ServerNotTrusted*' -or $message -match 'TrustedHosts') { return 12 }
     if ($message -match 'concurrent shells|MaxShellsPerUser') { return 13 }
-    if ($id -like 'CannotConnect*' -or $id -like 'WinRMOperationTimeout*' -or $id -like 'ComputerNotFound*') { return 11 }
+    if ($kind -eq 'AccessDenied') { return 10 }
+    if (@('1312', 'ServerNotTrusted') -contains $kind) { return 12 }
+    if (@('WinRMOperationTimeout', 'CannotConnect', 'ComputerNotFound') -contains $kind) { return 11 }
+    if ($message -match 'TrustedHosts') { return 12 }
     return 1
 }
 
