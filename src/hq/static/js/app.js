@@ -201,6 +201,7 @@
     await refreshTrust();
     if (state.view === 'settings') renderSettings();
     messageDialog('초기 설정', result.ok ? 'TrustedHosts에 서버를 추가했습니다.' : result.error);
+    return result.ok;
   }
 
   function renderServers() {
@@ -564,7 +565,7 @@
     tab.term.open(tab.termHost);
     // 키 입력, 터미널 응답, 확인을 받은 붙여넣기(term.paste)가 모두 onData로 와서 이 한 줄을 탄다
     tab.input = L.createInputQueue((data) => api.send_input(tab.sid, data));
-    tab.term.onData((data) => { if (!tab.ended) tab.input.push(data); });
+    tab.term.onData((data) => { if (L.shouldSendInput(tab, data)) tab.input.push(data); });
     tab.term.attachCustomKeyEventHandler((event) => terminalKey(tab, event));
     tab.termHost.addEventListener('paste', (event) => onPaste(tab, event), true);
     tab.observer = new ResizeObserver(() => fitTab(tab));
@@ -591,25 +592,29 @@
     if (tab.starting) return; // [다시 연결]을 거듭 눌러도 프로세스는 한 번만 띄운다
     tab.starting = true;
     const ends = tab.ends;
-    let result;
-    try {
-      fitTab(tab);
-      const cols = tab.term.cols;
-      const rows = tab.term.rows;
-      result = mode === 'open'
-        ? await api.open_session(tab.sid, tab.serverId, cols, rows)
-        : await api.reconnect(tab.sid, cols, rows);
-    } finally {
-      tab.starting = false;
-    }
+    // 다시 연결: 탭은 아직 끝남 상태지만, 새 ConPTY가 시작하며 묻는 질의(DA1 등)에 xterm이 답하도록 입력 잠금을 푼다.
+    // 그동안 hq로 가는 것은 터미널 응답뿐이다(L.shouldSendInput). 답이 막히면 탭 시작이 약 3초 늦어진다
+    tab.term.options.disableStdin = false;
+    fitTab(tab);
+    const cols = tab.term.cols;
+    const rows = tab.term.rows;
+    const result = await L.callHq(() => (mode === 'open'
+      ? api.open_session(tab.sid, tab.serverId, cols, rows)
+      : api.reconnect(tab.sid, cols, rows)));
+    tab.starting = false;
     // 기다리는 사이에 탭을 닫았다(여는 중에 닫혔으면 hq가 cancelled로 알린다). 알릴 것이 없다
     if (result.cancelled || !state.tabs.includes(tab)) return;
     if (result.ok) {
       // 기다리는 사이에 새 프로세스의 끝남이 먼저 왔으면 그 끝남을 '실행 중'으로 덮지 않는다
-      if (tab.ends === ends) setEnded(tab, null);
+      if (tab.ends === ends) {
+        setEnded(tab, null);
+        // 기다리는 사이에 바뀐 크기는 hq에 닿지 않았을 수 있다(여는 중이거나 끝난 탭이었다). 보낸 크기와 다르면 다시 알린다
+        if (tab.term.cols !== cols || tab.term.rows !== rows) api.resize(tab.sid, tab.term.cols, tab.term.rows);
+      }
       tab.term.focus();
       return;
     }
+    tab.term.options.disableStdin = Boolean(tab.ended); // 띄우지 못했다. 끝난 탭이면 입력 잠금을 되돌린다
     const server = serverById(tab.serverId);
     if (mode === 'open') removeTab(tab.sid); // 프로세스를 띄우지 않았으므로 탭을 닫는다
     if (!server) {
@@ -662,7 +667,10 @@
     else if (id === 'password') {
       if (await passwordDialog(server, '새 비밀번호를 저장하고 다시 연결합니다.')) startSession(tab, 'reconnect');
     } else if (id === 'setup') setupScriptDialog(server);
-    else if (id === 'trust') trustNow();
+    else if (id === 'trust') {
+      // 7.5의 비밀번호처럼, 설정하면 바로 다시 연결한다. 취소하면 그대로 둔다. 다시 연결의 사전 확인이 TrustedHosts를 다시 읽는다
+      if (await trustNow()) startSession(tab, 'reconnect');
+    }
   }
 
   function activate(sid) {
@@ -733,8 +741,9 @@
     if (event.type !== 'keydown') return true;
     const key = (event.key || '').toLowerCase();
     if (event.ctrlKey && !event.altKey && !event.shiftKey && key === 'c' && tab.term.hasSelection()) {
-      copyText(tab.term.getSelection());
-      tab.term.clearSelection();
+      copyText(tab.term.getSelection()).then((copied) => {
+        if (copied) tab.term.clearSelection(); // 복사하지 못했으면 선택을 남겨 다시 해 볼 수 있게 한다
+      });
       event.preventDefault();
       return false;
     }
@@ -744,9 +753,11 @@
 
   function onPaste(tab, event) {
     const text = event.clipboardData ? event.clipboardData.getData('text') : '';
-    if (!L.needsPasteConfirm(text)) return; // 한 줄은 xterm이 그대로 붙여넣는다
+    const action = L.pasteAction(text, tab.ended);
+    if (action === 'pass') return; // 한 줄은 xterm이 그대로 붙여넣는다
     event.preventDefault();
     event.stopImmediatePropagation();
+    if (action === 'ignore') return; // 끝난 탭은 입력이 잠겨 있다. 물어본 뒤 버리지 않도록 처음부터 받지 않는다
     const server = serverById(tab.serverId) || { name: '?', host: '?' };
     confirmDialog({
       title: '여러 줄 붙여넣기',

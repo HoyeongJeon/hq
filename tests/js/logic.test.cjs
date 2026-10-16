@@ -170,6 +170,45 @@ test('input queue logs a failed call and keeps going', async (t) => {
   assert.ok(warn.mock.calls[0].arguments.includes(error));
 });
 
+test('shouldSendInput passes everything for a live tab', () => {
+  assert.equal(L.shouldSendInput({ ended: null, starting: false }, 'ls\r'), true);
+  assert.equal(L.shouldSendInput({ ended: null, starting: true }, 'ls\r'), true); // 여는 중에 미리 친 글자는 hq가 쥐고 있다
+  assert.equal(L.shouldSendInput({ ended: null, starting: true }, DA1), true);
+});
+
+test('shouldSendInput blocks an ended tab but lets terminal replies through while it reconnects', () => {
+  const ended = { ended: 'DISCONNECTED', starting: false };
+  const reconnecting = { ended: 'DISCONNECTED', starting: true };
+  assert.equal(L.shouldSendInput(ended, 'ls\r'), false);
+  assert.equal(L.shouldSendInput(ended, DA1), false);
+  assert.equal(L.shouldSendInput(reconnecting, DA1), true);
+  assert.equal(L.shouldSendInput(reconnecting, '\x1b[12;40R'), true);
+  assert.equal(L.shouldSendInput(reconnecting, 'ls\r'), false);
+  assert.equal(L.shouldSendInput(reconnecting, DA1 + 'x'), false);
+});
+
+test('pasteAction ignores an ended tab, confirms several lines and passes one line', () => {
+  assert.equal(L.pasteAction('Get-Date\nhostname', 'DISCONNECTED'), 'ignore');
+  assert.equal(L.pasteAction('Get-Date', 'USER_EXIT'), 'ignore');
+  assert.equal(L.pasteAction('Get-Date\nhostname', null), 'confirm');
+  assert.equal(L.pasteAction('Get-Date\n\n', null), 'pass');
+  assert.equal(L.pasteAction('', null), 'pass');
+});
+
+test('callHq returns what the call resolves to', async () => {
+  assert.deepEqual(await L.callHq(() => Promise.resolve({ ok: true })), { ok: true });
+  assert.deepEqual(await L.callHq(() => ({ ok: false, need: 'password' })), { ok: false, need: 'password' });
+});
+
+test('callHq turns a rejected or throwing call into a logged failure result', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  const error = new Error('boom');
+  assert.deepEqual(await L.callHq(() => Promise.reject(error)), { ok: false, error: 'hq가 요청을 처리하지 못했습니다: boom' });
+  assert.deepEqual(await L.callHq(() => { throw 'plain'; }), { ok: false, error: 'hq가 요청을 처리하지 못했습니다: plain' });
+  assert.equal(warn.mock.callCount(), 2);
+  assert.ok(warn.mock.calls[0].arguments.includes(error));
+});
+
 test('newId is 32 lowercase hex digits', () => {
   assert.match(L.newId(), /^[0-9a-f]{32}$/);
   assert.notEqual(L.newId(), L.newId());

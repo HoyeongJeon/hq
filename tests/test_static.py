@@ -66,6 +66,50 @@ def test_all_terminal_input_goes_through_the_tab_queue():
     assert re.search(r"createInputQueue\(\(data\) => api\.send_input\(tab\.sid, data\)\)", text)
 
 
+def function_body(text, signature):
+    """app.js의 맨 바깥 함수(들여쓰기 2칸) 하나의 본문."""
+    match = re.search(re.escape(signature) + r" \{\n(.*?)\n  \}\n", text, re.S)
+    assert match, signature
+    return match.group(1)
+
+
+def test_reconnect_lets_terminal_replies_through_and_resends_a_missed_size():
+    # 다시 연결하는 동안 새 ConPTY의 질의(DA1 등)에 답하지 못하면 탭 시작이 약 3초 늦어진다(Fix round 1, 1번)
+    text = read("js/app.js")
+    assert "tab.term.onData((data) => { if (L.shouldSendInput(tab, data)) tab.input.push(data); });" in text
+    body = function_body(text, "async function startSession(tab, mode)")
+    assert body.index("tab.term.options.disableStdin = false;") < body.index("await ")
+    assert "tab.term.options.disableStdin = Boolean(tab.ended);" in body  # 실패하면 잠금을 되돌린다
+    assert re.search(r"if \(tab\.term\.cols !== cols \|\| tab\.term\.rows !== rows\) api\.resize\(", body)
+
+
+def test_trusting_hosts_from_an_ended_tab_reconnects_it():
+    text = read("js/app.js")
+    assert function_body(text, "async function trustNow()").rstrip().endswith("return result.ok;")
+    assert "if (await trustNow()) startSession(tab, 'reconnect');" in function_body(
+        text, "async function endedAction(tab, id)")
+
+
+def test_a_rejected_session_call_takes_the_normal_failure_path():
+    text = read("js/app.js")
+    body = function_body(text, "async function startSession(tab, mode)")
+    assert "await L.callHq(" in body
+    for call in ("api.open_session(", "api.reconnect("):
+        assert text.count(call) == body.count(call) == 1, call
+
+
+def test_ctrl_c_keeps_the_selection_when_copying_failed():
+    body = function_body(read("js/app.js"), "function terminalKey(tab, event)")
+    assert body.count("clearSelection()") == 1
+    assert "if (copied) tab.term.clearSelection();" in body
+
+
+def test_paste_into_an_ended_tab_is_ignored_before_any_dialog():
+    body = function_body(read("js/app.js"), "function onPaste(tab, event)")
+    assert "L.pasteAction(text, tab.ended)" in body
+    assert body.index("if (action === 'ignore') return;") < body.index("confirmDialog(")
+
+
 def test_index_has_the_places_app_js_needs():
     html = read("index.html")
     for element_id in ("rail-servers", "rail-settings", "servers-view", "settings-view", "settings-body", "refresh",

@@ -156,6 +156,33 @@
     };
   }
 
+  /* 탭의 입력(xterm onData)을 hq로 보내도 되는지. 끝난 탭의 입력은 막는다. 다만 다시 연결하는 동안(starting)에는
+     새 ConPTY가 시작하며 묻는 질의(DA1 등)의 답, 곧 터미널 응답만 보낸다. 막으면 ConPTY가 답을 기다리느라 탭 시작이
+     약 3초 늦어진다. 끝나지 않은 탭(여는 중 포함)은 모두 보낸다. 준비 신호 전의 입력은 hq가 쥐고 있다. */
+  function shouldSendInput(tab, data) {
+    if (!tab.ended) return true;
+    return Boolean(tab.starting) && isTerminalReply(data);
+  }
+
+  /* 붙여넣기를 어떻게 할지. 끝난 탭은 입력이 잠겨 있으니 묻지 않고 버린다('ignore'). 여러 줄은 먼저 묻고('confirm'),
+     한 줄은 xterm에 맡긴다('pass'). */
+  function pasteAction(text, ended) {
+    if (ended) return 'ignore';
+    return needsPasteConfirm(text) ? 'confirm' : 'pass';
+  }
+
+  /* hq 함수를 부르고 그 결과를 돌려준다. 호출이 결과({ok:false, ...}) 대신 예외로 끝나면 기록하고 실패 결과로 바꾼다.
+     그래야 프로세스 없는 탭이 '실행 중'으로 남지 않고 평소의 실패 처리(탭 닫기, 안내)를 탄다. */
+  async function callHq(call) {
+    try {
+      return await call();
+    } catch (error) {
+      console.warn('hq 호출이 실패했습니다:', error);
+      const detail = error && error.message ? error.message : String(error);
+      return { ok: false, error: `hq가 요청을 처리하지 못했습니다: ${detail}` };
+    }
+  }
+
   function newId() {
     const bytes = new Uint8Array(16);
     globalThis.crypto.getRandomValues(bytes);
@@ -176,6 +203,9 @@
     endedView,
     isTerminalReply,
     createInputQueue,
+    shouldSendInput,
+    pasteAction,
+    callHq,
     newId,
   };
 });
