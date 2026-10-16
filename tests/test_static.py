@@ -90,6 +90,13 @@ def test_trusting_hosts_from_an_ended_tab_reconnects_it():
         text, "async function endedAction(tab, id)")
 
 
+def test_trust_dialog_is_closed_before_an_ended_tab_reconnects():
+    # 다시 연결이 성공하면 터미널이 포커스를 가져간다. 안내 창이 열린 채라면 창을 닫으려는 Enter가 원격 셸로 간다
+    body = function_body(read("js/app.js"), "async function trustNow()")
+    assert body.count("messageDialog(") == body.count("await messageDialog(") == 1
+    assert body.index("await messageDialog(") < body.index("return result.ok;")
+
+
 def test_a_rejected_session_call_takes_the_normal_failure_path():
     text = read("js/app.js")
     body = function_body(text, "async function startSession(tab, mode)")

@@ -200,7 +200,9 @@
     const result = await api.add_trusted_hosts();
     await refreshTrust();
     if (state.view === 'settings') renderSettings();
-    messageDialog('초기 설정', result.ok ? 'TrustedHosts에 서버를 추가했습니다.' : result.error);
+    // 안내 창을 닫은 뒤에 돌아간다. 곧바로 다시 연결하면 그 탭의 터미널이 포커스를 가져가, 창을 닫으려는 Enter가
+    // 원격 셸로 가고 창은 열린 채 남는다
+    await messageDialog('초기 설정', result.ok ? 'TrustedHosts에 서버를 추가했습니다.' : result.error);
     return result.ok;
   }
 
