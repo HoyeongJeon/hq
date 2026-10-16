@@ -1,0 +1,2 @@
+# 받은 그대로의 바이트를 지킨다(core.autocrlf=true인 PC에서도 줄 끝을 바꾸지 않는다)
+src/hq/static/vendor/** -text
