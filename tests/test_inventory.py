@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -109,6 +111,27 @@ def test_second_save_keeps_the_previous_file_as_bak(tmp_path):
     inventory.save()
     assert (tmp_path / "inventory.json.bak").read_text(encoding="utf-8") == first
     assert not (tmp_path / "inventory.json.tmp").exists()
+
+
+def test_save_puts_the_whole_temp_file_on_disk_before_replacing(tmp_path, monkeypatch):
+    calls = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd):
+        calls.append(("fsync", os.fstat(fd).st_size))
+        real_fsync(fd)
+
+    def replace(src, dst):
+        calls.append(("replace", Path(src).name))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    inventory = make(tmp_path)
+    inventory.add(WEB)
+    inventory.save()
+    size = (tmp_path / "inventory.json").stat().st_size
+    assert calls == [("fsync", size), ("replace", "inventory.json.tmp")]
 
 
 def test_missing_file_means_empty(tmp_path):

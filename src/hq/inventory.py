@@ -177,7 +177,11 @@ class Inventory:
             }
             self._path.parent.mkdir(parents=True, exist_ok=True)
             temp = self._path.with_name(self._path.name + ".tmp")
-            temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            # 정전이 나도 본 파일이 옛 내용이나 새 내용 중 하나로 온전히 남도록, 바꿔치기 전에 내용을 디스크에 내린다.
+            with open(temp, "w", encoding="utf-8") as file:
+                file.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+                file.flush()
+                os.fsync(file.fileno())
             if self._path.exists():
                 shutil.copy2(self._path, self._bak)
             os.replace(temp, self._path)
