@@ -44,7 +44,8 @@ def username_check_script(host: str, usernames: list[str], secret_path: str) -> 
         "foreach ($u in $p.users) {\n"
         "    try {\n"
         "        $cred = New-Object System.Management.Automation.PSCredential($u, $secure)\n"
-        "        $s = New-PSSession -ComputerName $p.host -Credential $cred -ErrorAction Stop\n"
+        "        $s = New-PSSession -ComputerName $p.host -Credential $cred"
+        " -Authentication Negotiate -ErrorAction Stop\n"
         "        Remove-PSSession $s\n"
         '        Write-Output "[성공] $u"\n'
         "    } catch {\n"
@@ -72,7 +73,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         store = SecretStore(work)
         server_id = uuid.uuid4().hex
-        store.save(server_id, getpass.getpass(f"{user}@{host} 비밀번호(화면에 보이지 않음): "))
+        password = getpass.getpass(f"{user}@{host} 비밀번호(화면에 보이지 않음): ")
+        if not password:
+            print("비밀번호가 비어 있습니다.", file=sys.stderr)
+            return 2
+        store.save(server_id, password)
         secret = str(store.path_for(server_id))
         if tries:
             subprocess.run(encoded_argv(username_check_script(host, tries, secret), no_exit=False), check=False)

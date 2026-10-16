@@ -41,20 +41,20 @@ foreach ($keyPath in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Cl
 $cred = Get-Credential -Message "$ComputerName 접속 계정(비밀번호는 저장하지 않습니다)"
 
 Add-Line "== V4: 서비스가 '$($service.Status)' 상태에서 정상 접속 =="
-Test-Open '정상 접속' { New-PSSession -ComputerName $ComputerName -Credential $cred -ErrorAction Stop }
+Test-Open '정상 접속' { New-PSSession -ComputerName $ComputerName -Credential $cred -Authentication Negotiate -ErrorAction Stop }
 
 Add-Line "== V3: 오류 표본 =="
 $wrong = ConvertTo-SecureString ('wrong-' + [guid]::NewGuid().ToString()) -AsPlainText -Force
 $badCred = New-Object System.Management.Automation.PSCredential($cred.UserName, $wrong)
-Test-Open '틀린 비밀번호' { New-PSSession -ComputerName $ComputerName -Credential $badCred -ErrorAction Stop }
-Test-Open 'TrustedHosts 없음' { New-PSSession -ComputerName 192.0.2.10 -Credential $cred -ErrorAction Stop }
-Test-Open '포트 닫힘' { New-PSSession -ComputerName $ComputerName -Port 5999 -Credential $cred -ErrorAction Stop }
+Test-Open '틀린 비밀번호' { New-PSSession -ComputerName $ComputerName -Credential $badCred -Authentication Negotiate -ErrorAction Stop }
+Test-Open 'TrustedHosts 없음' { New-PSSession -ComputerName 192.0.2.10 -Credential $cred -Authentication Negotiate -ErrorAction Stop }
+Test-Open '포트 닫힘' { New-PSSession -ComputerName $ComputerName -Port 5999 -Credential $cred -Authentication Negotiate -ErrorAction Stop }
 
 $answer = Read-Host "동시 세션 한도 시험을 할까요? 세션을 최대 35개 열었다가 모두 닫습니다(2008 R2 서버 권장) [y/N]"
 if ($answer -eq 'y') {
     $opened = @()
     try {
-        for ($i = 1; $i -le 35; $i++) { $opened += New-PSSession -ComputerName $ComputerName -Credential $cred -ErrorAction Stop }
+        for ($i = 1; $i -le 35; $i++) { $opened += New-PSSession -ComputerName $ComputerName -Credential $cred -Authentication Negotiate -ErrorAction Stop }
         Add-Line "[동시 세션 한도] 35개까지 열림(한도 오류 없음)"
     } catch {
         Add-Line "[동시 세션 한도] $($opened.Count + 1)번째에서 실패: $(Format-Error $_)"

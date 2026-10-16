@@ -43,6 +43,26 @@ def test_username_check_script_carries_values_only_in_the_json_literal():
         assert value not in rest, value
 
 
+def test_username_check_connects_like_the_bootstrap():
+    # src/hq/ps/bootstrap.ps1과 같은 접속 설정이어야 V6 결과가 HQ 탭에서 겪을 결과와 같다.
+    script = username_check_script("10.0.1.21", USERS, SECRET)
+    calls = [line for line in script.splitlines() if "New-PSSession" in line]
+    assert len(calls) == 1, calls
+    assert "-Authentication Negotiate" in calls[0], calls[0]
+
+
+def test_empty_password_prints_one_line_and_exits_2(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr("getpass.getpass", lambda *_: "")
+    monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("빈 비밀번호로는 창을 열면 안 된다"))
+    monkeypatch.setattr("hq.verify.subprocess.Popen", lambda *_, **__: pytest.fail("빈 비밀번호로는 창을 열면 안 된다"))
+    assert main(["--host", "10.0.1.21", "--user", "Administrator"]) == 2
+    captured = capsys.readouterr()
+    assert captured.err == "비밀번호가 비어 있습니다.\n"
+    assert captured.out == ""
+    assert _work_dirs(tmp_path) == []
+
+
 def test_temp_secret_is_written_under_the_data_dir_and_removed_afterwards(monkeypatch, tmp_path):
     # TMPDIR가 Everyone 전체 권한 폴더일 수 있다(이 PC: C:\Users\Public\...).
     # 비밀번호 파일은 %LOCALAPPDATA%\hq에만 둔다.
