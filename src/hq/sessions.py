@@ -34,7 +34,7 @@ from hq.validation import is_hex_id
 
 log = logging.getLogger(__name__)
 
-HELD_INPUT_LIMIT = 64 * 1024  # 준비 신호 전에 쥐고 있을 입력(글자 수). 넘는 뒷부분은 버린다
+HELD_INPUT_LIMIT = 64 * 1024  # 준비 신호 전에 쥐고 있을 입력(글자 수). 넘게 하는 입력부터는 버린다
 
 # 터미널(xterm.js)이 ConPTY의 질의에 답하는 응답: DA1, DA2, 커서 위치, 장치 상태, 포커스 들어옴/나감.
 # ConPTY는 시작할 때 DA1 답을 기다리므로(답이 없으면 약 3초) 이것까지 쥐고 있으면 신호가 늦게 오거나 오지 않는다.
@@ -182,22 +182,26 @@ class _Gate(Enum):
 
 @dataclass
 class _Held:
-    """준비 신호 전에 친 입력. 친 순서대로 모으고, HELD_INPUT_LIMIT를 넘는 뒷부분은 버린다."""
+    """준비 신호 전에 친 입력. 친 순서대로 온전한 입력만 모은다.
+
+    HELD_INPUT_LIMIT에 들어가지 않는 입력이 오면 그것과 그 뒤의 입력을 모두 버린다. 입력을 잘라 반쪽을 남기면
+    붙여넣은 줄의 앞부분이 원격 프롬프트에 남아 다음 Enter에 실행될 수 있기 때문이다.
+    """
 
     chunks: list[str] = field(default_factory=list)
     size: int = 0
     overflowed: bool = False
 
     def add(self, data: str) -> bool:
-        """data를 모은다. 이번에 처음으로 넘쳐 버린 글자가 생겼으면 True."""
-        kept = data[: HELD_INPUT_LIMIT - self.size]
-        if kept:
-            self.chunks.append(kept)
-            self.size += len(kept)
-        if len(kept) == len(data) or self.overflowed:
+        """data를 모은다. 이번에 처음으로 넘쳐 입력을 버렸으면 True."""
+        if self.overflowed:
             return False
-        self.overflowed = True
-        return True
+        if self.size + len(data) > HELD_INPUT_LIMIT:
+            self.overflowed = True
+            return True
+        self.chunks.append(data)
+        self.size += len(data)
+        return False
 
 
 @dataclass(eq=False)
@@ -212,8 +216,12 @@ class _Session:
     running: bool = True
     closing: bool = False
     # pty를 쓰는 일(입력, 크기 바꾸기, 쥐고 있던 입력 보내기, 다시 연결의 교체, 닫기)을 한 줄로 세우고
-    # gate, held, size를 지킨다. 관리자 잠금(_lock)을 쥔 채 이 잠금을 잡을 수는 있지만 반대로는 잡지 않는다.
-    # 이 잠금 안에서 on_output/on_exit를 부르지 않는다(콜백이 write를 부를 수 있다).
+    # gate, held, size를 지킨다. 이 잠금 안에서 on_output/on_exit를 부르지 않는다(콜백이 write를 부를 수 있다).
+    # 잠금 순서: 관리자 잠금(_lock)을 쥔 채 이 잠금을 잡는 곳은 reconnect의 시작뿐이고, 반대로는 잡지 않는다.
+    # 이 잠금을 쥔 채 pty.write를 하므로 쓰기가 막히면 이 탭의 호출이 멈춘다. reconnect가 그 탭의 잠금을
+    # 기다리는 동안에는 관리자 잠금도 쥐고 있으므로 모든 탭의 호출(_get을 거치는 write, resize 등)까지 멈춘다.
+    # reconnect는 프로세스가 끝난 뒤에만 하고 끝난 ConPTY에 쓰면 곧바로 돌아오므로(측정) 실제로는 막히지 않는다고 본다.
+    # 감시 스레드는 그래서 관리자 잠금을 놓은 뒤에 이 잠금을 잡는다.
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
@@ -362,7 +370,8 @@ class SessionManager:
                 return
             session.running = False
             closing = session.closing
-            with session.lock:
+        with session.lock:  # 관리자 잠금을 놓은 뒤에 잡는다. 이 탭의 쓰기가 막혀 있어도 다른 탭은 멈추지 않는다
+            if session.generation == generation:  # 그사이 다시 연결이 새 프로세스 몫으로 비웠으면 그대로 둔다
                 session.held = _Held()  # 신호 전에 끝났으면 쥐고 있던 입력은 보내지 않고 버린다
         if not closing:
             self._notify(self._on_exit, session.id, code)

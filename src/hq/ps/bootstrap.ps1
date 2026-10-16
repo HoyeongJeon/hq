@@ -14,11 +14,12 @@ function global:prompt {
 }
 
 # 준비 신호: 안전장치를 건 바로 다음에 콘솔 제목을 바꾼다. ConPTY가 이를 화면에 보이지 않는 제목 시퀀스로
-# 내보내고, hq는 이것을 본 뒤에야 탭의 입력을 보낸다. 백신이 본문을 막거나 정책이 제한 언어 모드를 걸면
-# (이 줄도 위의 [Environment]::Exit도 거부된다) 신호가 오지 않아 hq가 탭을 끝낸다.
+# 내보내고, hq는 이것을 본 뒤에야 탭의 입력을 보낸다. 백신이 본문을 막으면 신호가 오지 않아 hq가 탭을 끝낸다.
+# FullLanguage가 아니면(예: 정책이 건 제한 언어 모드) 위의 [Environment]::Exit가 거부되어 안전장치가 듣지 않으므로
+# 신호를 내지 않는다. 제목 바꾸기도 함께 거부되는 데 기대지 않고 직접 확인한다.
 # 표시 글자를 조각으로 나눠 적는 이유: 이 줄이 실패하면 오류 메시지가 이 줄의 원문을 그대로 보여 주므로,
 # 원문에 표시가 통째로 있으면 hq가 그 메시지를 신호로 착각한다.
-$Host.UI.RawUI.WindowTitle = 'hq:safety' + '-ready'
+if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') { $Host.UI.RawUI.WindowTitle = 'hq:safety' + '-ready' }
 
 # 세션 만들기 실패를 hq 종료 코드로 바꾼다.
 # 10 로그인 거부, 11 응답 없음, 12 TrustedHosts 없음, 13 동시 세션 한도, 1 그 밖

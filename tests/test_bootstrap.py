@@ -160,19 +160,39 @@ def _statements_after_the_safety_net() -> list[str]:
     return [line for line in rest.splitlines() if line.strip() and not line.lstrip().startswith("#")]
 
 
+_SIGNAL = re.compile(
+    r"if \(\$ExecutionContext\.SessionState\.LanguageMode -eq 'FullLanguage'\) "
+    r"\{ \$Host\.UI\.RawUI\.WindowTitle = (?P<title>.+) \}"
+)
+
+
 def test_the_ready_signal_is_the_first_statement_after_the_safety_net():
+    # 제한 언어 모드 등 FullLanguage가 아니면 안전장치의 [Environment]::Exit가 거부되므로 신호를 내지 않는다.
+    # 제목 바꾸기도 함께 거부되는 데 기대지 않고 직접 확인한다. ConPTY는 제목을 제목 시퀀스(OSC)로 내보낸다.
     first = _statements_after_the_safety_net()[0]
-    assert first.startswith("$Host.UI.RawUI.WindowTitle = "), first  # ConPTY가 제목 시퀀스(OSC)로 내보낸다
-    pieces = re.findall(r"'([^']*)'", first)
-    assert "".join(pieces) == READY_MARKER, first
+    signal = _SIGNAL.fullmatch(first)
+    assert signal, first
+    assert "".join(re.findall(r"'([^']*)'", signal["title"])) == READY_MARKER, first
 
 
 def test_the_ready_marker_never_appears_whole_in_the_script_text():
-    # 줄이 실패하면 PowerShell 오류 메시지가 그 줄의 원문을 그대로 보여 준다(예: 정책이 건 제한 언어 모드에서
-    # 제목 바꾸기와 [Environment]::Exit가 모두 거부될 때). 원문에 표시가 통째로 있으면 hq가 그 오류 메시지를
-    # 준비 신호로 착각해, 안전장치가 듣지 않는 탭에 입력을 보낸다. 그래서 표시는 실행할 때 조각을 이어 만든다.
+    # 줄이 실패하면 PowerShell 오류 메시지가 그 줄의 원문을 그대로 보여 준다. 원문에 표시가 통째로 있으면 hq가
+    # 그 오류 메시지를 준비 신호로 착각해, 안전장치가 듣지 않는 탭에 입력을 보낼 수 있다. 그래서 표시는 실행할 때
+    # 조각을 이어 만들고, 매개변수(자유 글자인 별명 포함) 안에서도 통째로 나오지 못하게 한다.
     assert READY_MARKER not in bootstrap.template_text()
     assert READY_MARKER not in build_script(PARAMS)
+    marked = BootstrapParams(PARAMS.host, PARAMS.username, f"web {READY_MARKER}", PARAMS.secret_path)
+    assert READY_MARKER not in build_script(marked)
+    assert _payload(build_script(marked))["nickname"] == f"web {READY_MARKER}"
+
+
+def test_json_literal_never_holds_the_ready_marker_whole():
+    # 값 안의 ':'를 \u003a로 바꾼다. 준비 신호에는 ':'가 들어 있으므로 어떤 값에서도 통째로 나올 수 없다.
+    assert ":" in READY_MARKER
+    value = {"nickname": f"web {READY_MARKER}", "path": r"C:\x", "list": [READY_MARKER]}
+    literal = ps_json_literal(value)
+    assert READY_MARKER not in literal
+    assert json.loads(literal[1:-1]) == value
 
 
 def test_the_ready_marker_cannot_be_a_host_or_user_name():

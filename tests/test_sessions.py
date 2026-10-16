@@ -675,17 +675,55 @@ def test_a_chunk_with_anything_besides_terminal_replies_is_held(chunk):
     assert wait_for(lambda: spawn.ptys[0].written == [chunk])
 
 
-def test_held_input_is_capped_and_the_overflow_is_dropped_with_one_warning(caplog):
+def test_held_input_keeps_only_whole_writes_up_to_the_first_that_does_not_fit(caplog):
+    # 붙여넣은 줄을 반만 남기면 그 반쪽이 원격 프롬프트에 남아 다음 Enter에 실행될 수 있다. 그래서 들어가지 않는
+    # 입력은 통째로 버리고, 그 뒤의 입력도 모두 버린다(쥐고 있는 것은 늘 친 순서의 앞부분, 온전한 입력들뿐이다).
     limit = sessions.HELD_INPUT_LIMIT
     spawn = FakeSpawner()
     manager, _, _ = gated(spawn)
     manager.open(SID, "s1", ["ps"], 80, 24)
-    manager.write(SID, "a" * (limit - 1))
-    manager.write(SID, "bc")  # 한 글자만 들어간다
-    manager.write(SID, "d")  # 다 찼다
+    manager.write(SID, "a" * (limit - 4))
+    manager.write(SID, "bc")  # 들어간다(2자 남음)
+    manager.write(SID, "def\r")  # 들어가지 않는다: 통째로 버린다
+    manager.write(SID, "g")  # 자리는 있지만 앞 입력을 버렸으므로 버린다
     spawn.ptys[0].feed(MARKER)
-    expected = "a" * (limit - 1) + "b"
-    assert wait_for(lambda: "".join(spawn.ptys[0].written) == expected)
+    assert wait_for(lambda: spawn.ptys[0].written == ["a" * (limit - 4), "bc"])
+    time.sleep(0.05)
+    assert spawn.ptys[0].written == ["a" * (limit - 4), "bc"]
     messages = _warning_messages(caplog)
     assert len(messages) == 1, messages
     assert SID[:8] in messages[0]
+
+
+def test_a_write_that_exactly_fills_the_held_input_is_kept():
+    limit = sessions.HELD_INPUT_LIMIT
+    spawn = FakeSpawner()
+    manager, _, _ = gated(spawn)
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.write(SID, "a" * (limit - 2))
+    manager.write(SID, "bc")
+    spawn.ptys[0].feed(MARKER)
+    assert wait_for(lambda: spawn.ptys[0].written == ["a" * (limit - 2), "bc"])
+
+
+def test_a_tab_stuck_in_a_write_does_not_stall_other_tabs_when_its_process_ends():
+    # 한 탭의 pty.write가 막혀 그 탭의 잠금을 쥐고 있는 동안 그 프로세스가 끝나도, 감시 스레드가 관리자 잠금을
+    # 쥔 채 그 탭의 잠금을 기다리지 않는다. 기다리면 모든 탭의 관리자 호출이 함께 멈춘다.
+    stuck = BlockingWritePty(block_on="1")
+    other = FakePty()
+    ptys = iter([stuck, other])
+    manager, _, exits = make(lambda argv, rows, cols: next(ptys))
+    manager.open(SID, "s1", ["ps"], 80, 24)
+    manager.open(SID2, "s2", ["ps"], 80, 24)
+    writer = threading.Thread(target=manager.write, args=(SID, "1"))
+    writer.start()
+    assert stuck.entered.wait(2)
+    stuck.finish(0)
+    time.sleep(0.2)  # 감시 스레드가 끝 처리에 들어간다
+    start = time.monotonic()
+    manager.write(SID2, "x")
+    assert time.monotonic() - start < 0.5
+    assert other.written == ["x"]
+    stuck.release.set()
+    writer.join(2)
+    assert wait_for(lambda: exits == [(SID, 0)])
