@@ -1,3 +1,7 @@
+import re
+import traceback
+import zipfile
+
 import pytest
 from openpyxl import Workbook, load_workbook
 
@@ -25,6 +29,17 @@ def make_xlsx(path, rows, header=HEADERS):
         sheet.append(row)
     workbook.save(path)
     return path
+
+
+def rewrite_sheet(source, target, edit):
+    """xlsx 안의 첫 시트 XML만 edit(bytes) -> bytes로 바꿔 새 파일로 쓴다(다른 도구가 만든 이상한 파일 흉내)."""
+    with zipfile.ZipFile(source) as zin, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data = edit(data)
+            zout.writestr(item, data)
+    return target
 
 
 def fresh(tmp_path):
@@ -78,6 +93,26 @@ def test_too_big_or_not_xlsx_is_rejected(tmp_path):
     text.write_text("hello", encoding="utf-8")
     with pytest.raises(ExcelError):
         read_rows(text)
+
+
+def test_unreadable_cell_never_leaks_its_text(tmp_path):
+    source = make_xlsx(tmp_path / "src.xlsx", [["A", None, "10.0.0.1", None, "u", "pw", None]])
+    numeric_secret = b'<c r="F2" t="n"><v>S3cretPW</v></c>'  # 숫자 칸이라고 적혀 있는데 글자가 들어 있음
+    path = rewrite_sheet(source, tmp_path / "a.xlsx",
+                         lambda data: re.sub(rb'<c r="F2".*?</c>', numeric_secret, data, count=1))
+    with pytest.raises(ExcelError, match="내용을 읽을 수 없습니다") as info:
+        read_rows(path)
+    error = info.value
+    assert "S3cretPW" not in str(error)
+    assert error.__cause__ is None and error.__context__ is None
+    assert "S3cretPW" not in "".join(traceback.format_exception(error))
+
+
+def test_broken_sheet_xml_is_rejected(tmp_path):
+    source = make_xlsx(tmp_path / "src.xlsx", [["A", None, "10.0.0.1", None, "u", "pw", None]])
+    path = rewrite_sheet(source, tmp_path / "a.xlsx", lambda data: data[: len(data) // 2])
+    with pytest.raises(ExcelError, match="내용을 읽을 수 없습니다"):
+        read_rows(path)
 
 
 def test_preview_marks_new_existing_and_errors(tmp_path):

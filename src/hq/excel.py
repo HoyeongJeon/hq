@@ -82,22 +82,31 @@ def read_rows(path: Path) -> list[tuple[int, list[str]]]:
         workbook = load_workbook(path, read_only=True, data_only=True)
     except Exception as exc:  # openpyxl은 형식 문제마다 다른 예외를 던진다
         raise ExcelError(f"엑셀 파일(.xlsx)을 열 수 없습니다: {exc}") from exc
+    result: list[tuple[int, list[str]]] | None = []
     try:
+        # read_only라서 시트 XML은 여기서 읽힌다. 그래서 내용이 깨진 파일의 예외도 여기서 난다.
         sheet = workbook["서버"] if "서버" in workbook.sheetnames else workbook.worksheets[0]
         rows = sheet.iter_rows(values_only=True)
         header = [_cell_text(v) for v in (next(rows, None) or ())]
         if header[: len(HEADERS)] != HEADERS:
             raise ExcelError("양식이 다릅니다. [양식 저장]으로 받은 파일의 1행 머리글을 그대로 두세요.")
-        result = []
         for number, values in enumerate(rows, start=2):
             cells = list(values or ())[: len(HEADERS)]
             cells += [None] * (len(HEADERS) - len(cells))
             texts = [_cell_text(v, strip=(i != _PASSWORD_COLUMN)) for i, v in enumerate(cells)]
             if any(t.strip() for t in texts):
                 result.append((number, texts))
-        return result
+    except ExcelError:
+        raise
+    except Exception:
+        # openpyxl의 예외 메시지에는 셀 글자(비밀번호일 수 있음)가 들어 있다. `from None`으로도
+        # __context__에는 남으므로, except 밖에서 새로 던져 원래 예외와 아예 잇지 않는다.
+        result = None
     finally:
         workbook.close()
+    if result is None:
+        raise ExcelError("엑셀 파일의 내용을 읽을 수 없습니다. 엑셀에서 열어 다시 저장해 보세요.")
+    return result
 
 
 @dataclass
