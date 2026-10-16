@@ -1,0 +1,38 @@
+[project]
+name = "hq"
+version = "0.1.0"
+description = "Windows 서버에 PowerShell로만 접속하는 로컬 콘솔"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "pywebview>=6.2.1",
+    "pywinpty>=3.0.5",
+]
+
+[project.gui-scripts]
+hq = "hq.app:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pillow>=11.0.0",
+    "pyinstaller>=6.11.0",
+    "pytest>=8.3.0",
+    "pytest-timeout>=2.3.1",
+    "ruff>=0.8.0",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF001", "RUF003"]  # 한글 문자열·주석의 전각/특수 문자 경고는 무시
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 120
+markers = ["integration: 실제 powershell.exe·ConPTY를 띄우는 테스트"]
