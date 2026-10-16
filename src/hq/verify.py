@@ -3,7 +3,8 @@
     uv run python -m hq.verify --host 10.0.1.21 --user Administrator --nick 웹01
     uv run python -m hq.verify --host 10.0.1.21 --user Administrator --try-users .\\Administrator WEB01\\Administrator
 
-비밀번호는 사용자가 입력하고, 임시 폴더의 DPAPI 파일에만 잠시 있다가 끝나면 지워진다.
+비밀번호는 사용자가 입력하고, %LOCALAPPDATA%\\hq 아래 임시 폴더의 DPAPI 파일에만 잠시 있다가 끝나면 지워진다.
+TMPDIR는 쓰지 않는다. 다른 프로그램이 모든 사용자가 쓸 수 있는 폴더로 바꿔 두었을 수 있다.
 """
 
 import argparse
@@ -16,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from hq.bootstrap import BootstrapParams, build_command, encoded_argv, ps_json_literal, reason_for_exit
+from hq.paths import data_dir
 from hq.secret_store import SecretStore
 from hq.validation import ValidationError, validate_host, validate_username
 
@@ -66,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     except ValidationError as exc:
         parser.error(str(exc))
 
-    work = Path(tempfile.mkdtemp(prefix="hq-verify-"))
+    work = Path(tempfile.mkdtemp(prefix="hq-verify-", dir=data_dir()))
     try:
         store = SecretStore(work)
         server_id = uuid.uuid4().hex
