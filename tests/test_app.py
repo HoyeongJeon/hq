@@ -412,6 +412,18 @@ def test_a_refused_new_window_request_does_not_reload_the_page(tmp_path):
         shutdown(bridge)
 
 
+@pytest.mark.parametrize("href", ["chrome-error://chromewebdata/", "about:blank"])
+def test_a_foreign_document_under_the_hq_address_is_reported_not_reloaded(href, caplog):
+    # 컨트롤의 Source(get_current_url)가 이미 hq 화면이면 load_url은 이동하지 않는데, pywebview는 loaded와 준비 표시를
+    # 지운다. 그 뒤의 evaluate_js(화면 출력, API 반환)는 모두 20초 뒤 실패한다(실제 창에서 확인). 예: hq 화면을 읽지
+    # 못해 뜬 오류 페이지, 취소된 첫 이동
+    window = PageWindow(url=INDEX, href=href)
+    app.PageGuard(INDEX, bridge=None).on_loaded(window)
+    assert window.loaded == []
+    (error,) = app_errors(caplog)
+    assert href in error.getMessage()
+
+
 def test_without_the_document_address_the_guard_uses_the_window_address(caplog):
     window = FakeWindow(url="http://192.0.2.1/")  # evaluate_js가 없다: 문서를 읽지 못한다
     app.PageGuard(INDEX, bridge=None).on_loaded(window)

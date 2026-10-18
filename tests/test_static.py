@@ -73,6 +73,20 @@ def function_body(text, signature):
     return match.group(1)
 
 
+def test_terminal_links_never_navigate_or_ask_in_english():
+    # 원격 출력의 OSC 8 링크를 누르면, linkHandler가 없는 xterm은 영어 confirm()을 띄우고 window.open()으로 연다.
+    # hq 창에서는 막힌 이동이 되고, pywebview가 같은 화면에 API를 다시 심어 진행 중인 호출이 모두 멈춘다
+    xterm = read("vendor/xterm/xterm.js")
+    assert "activate:(e,t)=>r?r.activate(e,t,n):h(0,t)" in xterm  # linkHandler가 있으면 xterm은 그것만 부른다
+    text = read("js/app.js")
+    assert "linkHandler: { activate: showLink }," in function_body(text, "function createTerminal(tab)")
+    handler = function_body(text, "function showLink(event, uri)")
+    assert re.search(r"messageDialog\('링크', ", handler)  # 한국어 안내와 주소(글자로만)
+    code = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)  # 주석은 빼고 본다
+    for opener in ("window.open", "location.", "confirm("):
+        assert opener not in code
+
+
 def test_reconnect_lets_terminal_replies_through_and_resends_a_missed_size():
     # 다시 연결하는 동안 새 ConPTY의 질의(DA1 등)에 답하지 못하면 탭 시작이 약 3초 늦어진다(Fix round 1, 1번)
     text = read("js/app.js")

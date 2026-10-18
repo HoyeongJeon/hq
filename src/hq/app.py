@@ -150,10 +150,16 @@ def stay_on_index(
     url은 문서의 실제 주소다. 없으면 pywebview가 아는 주소(get_current_url)를 쓴다.
     """
     try:
+        source = window.get_current_url() or ""  # 컨트롤의 Source. load_url은 이것과 다를 때만 이동한다
         if url is None:
-            url = window.get_current_url() or ""
+            url = source
         if _page(url) == _page(index_url):
             return True
+        if _page(source) == _page(index_url):
+            # load_url은 이동하지 않는데 pywebview는 loaded와 준비 표시를 지운다. 그러면 그 뒤의 evaluate_js(화면 출력,
+            # API 반환)가 모두 20초 뒤 실패한다. 예: hq 화면을 읽지 못해 뜬 오류 페이지, 취소된 첫 이동
+            log.error("hq 화면 주소에 다른 문서가 떠 있어 되돌리지 못함: %s", url[:200])
+            return False
         if may_revert():
             log.warning("hq 화면 밖으로 이동해서 되돌림: %s", url[:200])
             window.load_url(index_url)

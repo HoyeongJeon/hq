@@ -32,6 +32,7 @@ from hq.validation import ValidationError, is_hex_id
 
 log = logging.getLogger(__name__)
 PUMP_INTERVAL = 0.016
+SETTLE_TIMEOUT = 10.0  # shutdown이 다른 스레드의 닫기를 기다리는 최대 시간. 닫기 하나는 close_timeout(2초) 안팎이다
 TEMPLATE_NAME = "hq-서버목록-양식.xlsx"
 _PREVIEW_FIELDS = ("name", "nickname", "host", "group", "username")  # 비밀번호와 메모는 미리보기로 보내지 않는다
 
@@ -96,7 +97,9 @@ class Bridge:
         self._lock = threading.Lock()  # _tabs와 그 안의 _Tab을 지킨다
         self._emit_lock = threading.Lock()  # 출력 묶음과 끝남 알림이 순서대로 화면에 가게 한다
         self._stop = threading.Event()  # shutdown: 펌프를 멈추고 새 탭을 받지 않는다
-        self._shutdown_lock = threading.Lock()  # 늦게 부른 shutdown은 먼저 시작한 것이 탭을 다 닫을 때까지 기다린다
+        # 닫는 중인 세션 닫기 작업 수. 탭은 닫기를 시작할 때 목록에서 빠지므로, shutdown은 이것으로 남은 닫기를 기다린다
+        self._closing = 0  # _lock이 지킨다
+        self._settled = threading.Condition(self._lock)  # 닫기가 끝나거나 여는 중인 탭이 자리를 비우면 깨운다
         self._quitting = False
 
     # ---------- 서버 목록 ----------
@@ -294,9 +297,13 @@ class Bridge:
             closed = tab.closed
             if closed or not result["ok"]:
                 del self._tabs[session_id]  # 자리를 맡은 동안에는 누구도 지우지 않는다(_close_tabs 참고)
+                self._closing += closed  # 아래에서 닫는다. 목록에서 빠져도 shutdown이 기다리게 같은 잠금 안에서 센다
         if closed:
-            self._sessions.close(session_id)  # 띄우는 사이에 닫혔다. 띄우지 않았으면 아무 일도 없다
-            self._batcher.discard(session_id)
+            try:
+                self._sessions.close(session_id)  # 띄우는 사이에 닫혔다. 띄우지 않았으면 아무 일도 없다
+                self._batcher.discard(session_id)
+            finally:
+                self._close_done()
             return {"ok": False, "cancelled": True}
         return result
 
@@ -449,10 +456,25 @@ class Bridge:
                     self._tabs[sid].closed = True
                 else:
                     del self._tabs[sid]
-        self._sessions.close_many(ids)
-        for sid in ids:
-            self._batcher.discard(sid)
+            self._closing += 1  # 탭이 목록에서 빠지는 것과 같은 잠금 안에서 센다(shutdown이 틈 없이 기다리게)
+        try:
+            self._sessions.close_many(ids)
+            for sid in ids:
+                self._batcher.discard(sid)
+        finally:
+            self._close_done()
         return ids
+
+    def _close_done(self) -> None:
+        with self._lock:
+            self._closing -= 1
+            self._settled.notify_all()
+
+    def _wait_until_settled(self) -> None:
+        """다른 스레드가 닫는 중인 세션과 여는 중인 탭이 모두 끝날 때까지 기다린다(최대 SETTLE_TIMEOUT초)."""
+        with self._lock:
+            if not self._settled.wait_for(lambda: not self._closing and not self._tabs, SETTLE_TIMEOUT):
+                log.warning("닫는 중인 세션을 %g초 기다렸지만 끝나지 않아 그대로 끝냄", SETTLE_TIMEOUT)
 
     def _emit(self, script: str) -> None:
         try:
@@ -509,7 +531,11 @@ def start_pump(bridge: Bridge) -> None:
 
 
 def close_requested(bridge: Bridge) -> bool:
-    """창을 닫아도 되면 True. 열린 탭이 있으면 화면에 확인을 부탁하고 False(닫기 취소)."""
+    """창을 닫아도 되면 True. 열린 탭이 있으면 화면에 확인을 부탁하고 False(닫기 취소).
+
+    이미 닫는 중인 탭(닫기를 누른 탭, 화면이 다시 읽혀 닫는 탭)은 물을 것이 없어 세지 않는다. 창은 닫히고, 창이 닫힌
+    뒤 main이 부르는 shutdown이 그 닫기가 끝날 때까지 기다린다(이 함수는 창 스레드에서 돌므로 여기서 기다리지 않는다).
+    """
     if bridge._quitting:
         return True
     with bridge._lock:
@@ -533,9 +559,10 @@ def close_all_sessions(bridge: Bridge) -> list[str]:
 def shutdown(bridge: Bridge) -> None:
     """펌프를 멈추고 새 탭을 받지 않으며, 모든 탭을 동시에 닫는다(최대 close_timeout초). 여러 번 불러도 된다.
 
-    다른 스레드가 이미 닫는 중이면 그것이 끝날 때까지 기다린다. quit이 탭을 닫는 사이 창이 닫히면 main이 곧바로
-    부르는데, 먼저 돌아오면 프로세스가 Ctrl+C·exit를 보내던 중에 끝나 서버 세션이 유휴 시간까지 남는다.
+    다른 스레드가 닫는 중인 세션(quit, 탭 닫기, 화면이 다시 읽혀 닫는 탭)과 여는 중인 탭도 끝날 때까지 기다린다.
+    창이 닫힌 뒤 main이 부르는데, 먼저 돌아오면 프로세스가 Ctrl+C·exit를 보내던 중에 끝나 서버 세션이 유휴 시간까지
+    남는다(AC-7).
     """
-    with bridge._shutdown_lock:
-        bridge._stop.set()
-        close_all_sessions(bridge)
+    bridge._stop.set()
+    close_all_sessions(bridge)
+    bridge._wait_until_settled()

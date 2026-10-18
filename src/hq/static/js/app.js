@@ -150,6 +150,14 @@
     });
   }
 
+  // 원격 출력의 OSC 8 링크를 눌렀을 때(xterm linkHandler). hq 창은 다른 주소로 가지 않으므로 링크를 열지 않고 주소를
+  // 글자로만 보여 준다. linkHandler가 없으면 xterm은 영어 confirm() 뒤 window.open()으로 연다. 그것은 막힌 이동이 되고
+  // pywebview가 이 화면에 API를 다시 심어, 기다리던 hq 호출(입력, 탭 열기 등)이 모두 멈춘다
+  function showLink(event, uri) {
+    messageDialog('링크', `hq 창에서는 링크를 열지 않습니다. 필요하면 주소를 복사해 브라우저에서 여세요.\n${uri}`,
+      [{ label: '주소 복사', run: () => copyText(uri) }]);
+  }
+
   function field(id, label, input, hint) {
     return h('label', { class: 'field', for: id }, h('span', { class: 'field-label', text: label }), input,
       hint ? h('span', { class: 'hint', text: hint }) : null);
@@ -590,6 +598,7 @@
       cursorBlink: true,
       scrollback: 10000,
       theme: TERM_THEME,
+      linkHandler: { activate: showLink },
     });
     tab.fit = new FitAddon.FitAddon();
     tab.term.loadAddon(tab.fit);

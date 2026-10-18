@@ -3,11 +3,13 @@ import json
 import logging
 import re
 import threading
+import time
 
 import pytest
 from fakes import FakeSpawner, wait_for
 from openpyxl import Workbook
 
+from hq import bridge as bridge_module
 from hq.bootstrap import READY_MARKER
 from hq.bridge import Bridge, close_all_sessions, close_requested, shutdown, start_pump
 from hq.excel import HEADERS
@@ -649,6 +651,81 @@ def test_a_second_shutdown_waits_for_the_one_still_closing_tabs(make):
     finished = spawner.ptys[0].closed
     quitting.join(5)
     assert finished and spawner.ptys[0].terminated
+
+
+@pytest.mark.parametrize("close", [
+    pytest.param(lambda bridge: bridge.close_session(SID), id="close_session"),  # 마지막 탭을 닫자마자 X
+    pytest.param(close_all_sessions, id="close_all_sessions"),  # hq 화면이 다시 읽힌 직후 X
+])
+def test_shutdown_waits_for_tabs_that_are_still_closing(make, close):
+    # 닫는 중인 탭은 목록에서 이미 빠져 창은 확인 없이 닫힌다. main의 shutdown이 먼저 돌아오면 Ctrl+C·exit를 보내던
+    # 중에 프로세스가 끝나 서버 세션이 유휴 시간까지 남는다(AC-7). shutdown은 그 닫기가 끝날 때까지 기다린다
+    spawner = FakeSpawner(exit_on_exit=False)  # exit에 끝나지 않는 셸: 닫기가 close_timeout까지 걸린다
+    h = make(spawn=spawner, close_timeout=0.6)
+    server = h.server()
+    assert h.bridge.open_session(SID, server["id"], 80, 24) == {"ok": True}
+    closing = threading.Thread(target=close, args=(h.bridge,))
+    closing.start()
+    assert wait_for(lambda: "\x03" in spawner.ptys[0].written)
+    assert close_requested(h.bridge) is True  # 확인할 탭은 없다. 창은 닫히고 기다림은 shutdown이 맡는다
+    shutdown(h.bridge)
+    finished = spawner.ptys[0].closed
+    closing.join(5)
+    assert finished and spawner.ptys[0].terminated
+
+
+class HeldSpawner(FakeSpawner):
+    """프로세스를 띄우는 도중에 붙잡아 둔다(release를 기다린다)."""
+
+    def __init__(self):
+        super().__init__(exit_on_exit=False)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, argv, rows, cols):
+        self.entered.set()
+        self.release.wait(5)
+        return super().__call__(argv, rows, cols)
+
+
+def test_shutdown_waits_for_a_tab_that_was_still_opening(make):
+    # 띄우는 도중에 끝내면 open_session이 마무리하며 그 세션을 닫는다. shutdown은 그것까지 기다린다
+    spawner = HeldSpawner()
+    h = make(spawn=spawner, close_timeout=0.6)
+    server = h.server()
+    opening, _ = open_in_background(h, server["id"])
+    assert spawner.entered.wait(2)
+    seen = {}
+
+    def quit_now():
+        shutdown(h.bridge)
+        seen["closed_when_shutdown_returned"] = bool(spawner.ptys) and spawner.ptys[0].closed
+
+    stopping = threading.Thread(target=quit_now)
+    stopping.start()
+    time.sleep(0.2)  # shutdown이 기다리기 시작한 뒤에 프로세스가 뜬다
+    spawner.release.set()
+    stopping.join(5)
+    opening.join(5)
+    assert seen == {"closed_when_shutdown_returned": True}
+
+
+def test_shutdown_stops_waiting_for_a_stuck_close_and_says_so(make, monkeypatch, caplog):
+    # 닫기가 끝나지 않아도 HQ가 끝나지 못한 채 남지는 않는다
+    monkeypatch.setattr(bridge_module, "SETTLE_TIMEOUT", 0.1)
+    spawner = FakeSpawner(exit_on_exit=False)
+    h = make(spawn=spawner, close_timeout=2.0)
+    server = h.server()
+    h.bridge.open_session(SID, server["id"], 80, 24)
+    closing = threading.Thread(target=h.bridge.close_session, args=(SID,))
+    closing.start()
+    assert wait_for(lambda: "\x03" in spawner.ptys[0].written)
+    started = time.monotonic()
+    shutdown(h.bridge)
+    assert time.monotonic() - started < 1.0
+    assert not spawner.ptys[0].closed
+    assert len(bridge_warnings(caplog)) == 1
+    closing.join(5)
 
 
 def test_close_all_sessions_closes_every_tab_but_keeps_taking_new_ones(make):
