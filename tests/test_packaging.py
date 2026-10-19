@@ -47,7 +47,37 @@ def test_spec_puts_the_pywinpty_native_files_next_to_its_module():
         assert target == "winpty", (name, target)
 
 
+def test_spec_makes_one_windowed_exe_named_hq_with_the_icon():
+    exe = run_spec()["exe"]
+    assert exe["console"] is False
+    assert exe["name"] == "hq"
+    assert (ROOT / exe["icon"]).is_file()
+
+
 def test_build_and_shortcut_scripts_exist():
     assert "pyinstaller hq.spec" in (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8-sig")
     shortcut = (ROOT / "scripts" / "make-shortcut.ps1").read_text(encoding="utf-8-sig")
     assert "09_앱_바로가기" in shortcut and "HQ.lnk" in shortcut
+
+
+def test_the_shortcut_runs_a_copy_that_only_this_account_can_change():
+    # dist\hq.exe는 C:\에서 Authenticated Users:(M)을 물려받는다. 다른 계정이 바꿔 넣은 exe를 바로가기로 실행하면
+    # 그 코드가 내 권한으로 돌아 DPAPI 비밀번호를 모두 풀 수 있다(spec 8.1). 그래서 내 계정만 쓸 수 있는 폴더에
+    # 복사해 거기를 가리킨다
+    text = (ROOT / "scripts" / "make-shortcut.ps1").read_text(encoding="utf-8-sig")
+    assert "$folder = Join-Path $env:LOCALAPPDATA 'Programs\\hq'" in text
+    assert "$installed = Join-Path $folder 'hq.exe'" in text
+    assert "$link.TargetPath = $installed" in text
+    assert "$link.WorkingDirectory = $folder" in text
+    assert '$link.IconLocation = "$installed,0"' in text
+    # 쓰기 권한 검사: 상속된 항목까지 SID로 본다. 허용은 내 계정, SYSTEM, Administrators뿐이다. 권한은 바꾸지 않는다
+    assert "GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])" in text
+    assert "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value" in text
+    assert "'S-1-5-18'" in text and "'S-1-5-32-544'" in text
+    assert "Set-Acl" not in text and "icacls" not in text
+    # 복사 전에 폴더 권한과 실행 중인지를 보고, 복사한 뒤 바로가기를 만들기 전에 exe 권한을 다시 본다
+    copy = text.index("Copy-Item")
+    assert text.index("Assert-OnlyMineCanWrite $folder") < copy
+    assert text.index("Get-Process -Name hq") < copy
+    assert copy < text.index("Assert-OnlyMineCanWrite $installed") < text.index("CreateShortcut")
+    assert "HQ를 먼저 닫" in text
