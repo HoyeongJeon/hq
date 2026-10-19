@@ -24,17 +24,17 @@
 
   미리 쳐 둔 입력 확인:
 
-  1. HQ 탭에서 `Stop-Process -Id $PID -Force`를 치고 Enter를 누른다.
-  2. 곧바로, "연결 끊김" 표시가 뜨기 전에 `New-Item -ItemType File $HOME\hq-ac8.txt`를 치고 Enter를 누른다.
-  3. 그 뒤 이 PC의 PowerShell(HQ 탭이 아닌 내 PC의 창)에서 `Test-Path $HOME\hq-ac8.txt`를 실행한다. `False`여야 한다. `True`면 미리 친 명령이 내 PC에서 실행된 것이므로 실패다.
+  1. HQ 탭에서 `Start-Sleep 5; Stop-Process -Id $PID -Force`를 치고 Enter를 누른다. 5초 뒤에 연결이 끊긴다.
+  2. 그 5초 안에 `New-Item -ItemType File $HOME\hq-ac8.txt`를 치고 Enter를 누른다. 이 입력은 서버가 아직 바쁠 때 미리 쳐 둔 입력이 된다. 치는 글자가 화면에 보이지 않을 수 있는데 정상이다.
+  3. "연결 끊김"이 뜬 뒤 이 PC의 PowerShell(HQ 탭이 아닌 내 PC의 창)에서 `Test-Path $HOME\hq-ac8.txt`를 실행한다. `False`여야 한다. `True`면 미리 친 명령이 내 PC에서 실행된 것이므로 실패다.
 
-  몇 번 되풀이해도 된다. 파일이 생긴 적이 있으면 이 PC의 PowerShell에서 `Remove-Item $HOME\hq-ac8.txt`로 지운다.
+  2번의 Enter가 "연결 끊김"보다 늦었으면 그 회는 미리 쳐 둔 입력을 시험한 것이 아니므로 세지 않고 다시 한다. 파일이 생긴 적이 있으면 이 PC의 PowerShell에서 `Remove-Item $HOME\hq-ac8.txt`로 지운다.
 
 - [ ] AC-9 `%LOCALAPPDATA%\hq` 아래 어떤 파일(로그 포함)에도 비밀번호가 평문으로 없다. 다른 Windows 계정으로는 비밀번호 파일을 풀 수 없다.
 
   평문 검사: HQ에 저장해 둔 서버 비밀번호 하나로, HQ를 띄운 채로 한 번, 닫은 뒤 한 번 내 PowerShell에서 실행한다. 아래 블록을 `& {`부터 `}`까지 한 번에 붙여 넣고, `찾을 비밀번호` 칸이 뜨면 비밀번호를 친다. 비밀번호는 그 칸에만 치므로 명령줄과 PSReadLine 기록에 남지 않고, 블록 안의 변수는 블록이 끝나면 함께 사라진다.
 
-  판정: `검사한 파일: N개`(N은 1 이상) 아래에 아무 경로도 나오지 않으면 통과. 경로가 나오면 그 파일에 비밀번호가 평문으로 있다는 뜻이므로 실패다. 빨간 오류 가운데 `다른 프로세스에서 사용 중이므로` 오류만 HQ가 열어 둔 파일을 읽지 못했다는 뜻이다. 경고가 나오거나, `검사한 파일` 줄이 없거나 0개이거나, `'Pattern' 매개 변수가 null` 같은 오류가 나오면 아무것도 검사하지 않은 것이므로 다시 실행한다.
+  판정: `검사한 파일: N개`(N은 1 이상) 아래에 아무 경로도 나오지 않으면 통과. 경로가 나오면 그 파일에 비밀번호가 평문으로 있다는 뜻이므로 실패다. 빨간 오류 가운데 `다른 프로세스에서 사용 중이므로`(영어 `being used by another process`) 오류만 HQ가 열어 둔 파일을 읽지 못했다는 뜻이다. 경고가 나오거나, `검사한 파일` 줄이 없거나 0개이거나, `'Pattern' 매개 변수가 null`(영어 `parameter 'Pattern' because it is null`) 같은 오류가 나오면 아무것도 검사하지 않은 것이므로 다시 실행한다.
 
   ```powershell
   & {
@@ -55,7 +55,7 @@
   runas /user:<다른 계정> powershell
   ```
 
-  새로 뜬 다른 계정의 PowerShell 창에서 그 파일을 풀어 본다. DPAPI 오류, 곧 `키를 지정된 상태에서 사용하기에 부적합합니다`(영어 Windows는 `Key not valid for use in specified state`)이고 오류 아래 `CategoryInfo`에 `CryptographicException`이 보일 때만 통과다. `System.Security.SecureString`이 나오면 실패다. 경로를 찾을 수 없다는 오류나 `'String' 매개 변수가 null`이라는 오류는 검사가 되지 않은 것이므로 복사부터 다시 한다.
+  새로 뜬 다른 계정의 PowerShell 창에서 그 파일을 풀어 본다. DPAPI 오류, 곧 `키를 지정된 상태에서 사용하기에 부적합합니다`(영어 Windows는 `Key not valid for use in specified state`)이고 오류 아래 `CategoryInfo`에 `CryptographicException`이 보일 때만 통과다. `System.Security.SecureString`이 나오면 실패다. 경로를 찾을 수 없다는 오류나 `'String' 매개 변수가 null`(영어 `parameter 'String' because it is null`)이라는 오류는 검사가 되지 않은 것이므로 복사부터 다시 한다.
 
   ```powershell
   ConvertTo-SecureString (Get-Content C:\Users\Public\hq-dpapi-test.dpapi)
