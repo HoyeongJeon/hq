@@ -67,4 +67,35 @@ try {
 } catch {
     Write-Host "프롬프트에 별명을 붙이지 못했습니다: $($_.Exception.Message)"
 }
+#region tab
+# Tab: 회색 미리보기(PSReadLine이 입력 기록에서 고른 예측)가 보이면 받아들이고, 없으면 지금처럼 자동완성한다
+# (TabCompleteNext라서 Tab을 거듭 누르면 후보가 차례로 바뀐다). PSReadLine은 Enter-PSSession 안에서도 이 PC의
+# 셸에서 돌므로 원격 세션에 들어가기 전에 여기서 건다. 자동완성 후보는 PSReadLine이 원격 세션에 물어 온다.
+# 미리보기가 보였는지는 AcceptSuggestion 앞뒤의 입력 줄을 견주어 안다(받을 미리보기가 없으면 줄이 그대로다).
+# AcceptSuggestion은 PSReadLine 2.1부터 있다. PSReadLine이 없거나 그보다 낮으면 Tab을 그대로 두고 아무것도 찍지 않는다.
+# 키를 걸지 못해도 탭을 끝내거나 접속을 건너뛰지 않고 한 줄로 알린다.
+try {
+    $readLine = 'Microsoft.PowerShell.PSConsoleReadLine' -as [type]
+    if ($null -ne $readLine -and $null -ne $readLine.GetMethod('AcceptSuggestion')) {
+        $tabKey = @{
+            Chord = 'Tab'
+            BriefDescription = 'AcceptSuggestionOrTabComplete'
+            Description = '회색 미리보기가 있으면 받아들이고, 없으면 자동완성한다'
+            ScriptBlock = {
+                param($key, $arg)
+                $before = $null
+                $after = $null
+                $cursor = $null
+                [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$before, [ref]$cursor)
+                [Microsoft.PowerShell.PSConsoleReadLine]::AcceptSuggestion($key, $arg)
+                [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$after, [ref]$cursor)
+                if ($after -ceq $before) { [Microsoft.PowerShell.PSConsoleReadLine]::TabCompleteNext($key, $arg) }
+            }
+        }
+        Set-PSReadLineKeyHandler @tabKey
+    }
+} catch {
+    Write-Host "Tab으로 미리보기 받기를 켜지 못했습니다: $($_.Exception.Message)"
+}
+#endregion tab
 Enter-PSSession -Session $global:__hq_session

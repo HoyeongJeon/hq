@@ -1,9 +1,11 @@
+import functools
 import re
 
 import pytest
 from ps import parse_errors, run_ps
 from ptyrun import run_pty
 
+from hq import bootstrap
 from hq.bootstrap import (
     READY_MARKER,
     BootstrapParams,
@@ -189,3 +191,173 @@ def test_error_classification():
         lines.append("Write-Output (Get-HqExitCode $e)")
     result = run_ps("\n".join(lines))
     assert [int(x) for x in result.stdout.split()] == [code for *_, code in CASES], result.stderr
+
+
+# ---- Tab으로 회색 미리보기 받기 (Task 16b, 규칙 R16b-1) ----
+# 탭과 같은 방식(-NoLogo -NoProfile -NoExit -EncodedCommand)으로 이 PC의 대화형 PowerShell을 ConPTY에 띄우고,
+# 부트스트랩에 실제로 든 Tab 키 설정 부분(tab_binding)을 돌린 뒤 키를 친다. 어디에도 접속하지 않는다.
+
+# 모두 이 시험 프로세스 안에서만 바뀐다. SaveNothing이면 PSReadLine은 사용자의 기록 파일을 읽지도 쓰지도 않는다.
+# PSReadLine은 첫 입력 줄을 읽을 때에야 기록을 만들므로, 그 전(스크립트 안)에 AddToHistory를 부르면
+# NullReferenceException이 난다. 그래서 기록 넣기는 함수로 두고 첫 입력 줄로 부른다. 이 줄에는 기대하는 출력
+# 글자가 없고, 'Write-Output'으로 시작하지 않아 미리보기 후보도 되지 않는다.
+TAB_SETUP = r"""
+Set-PSReadLineOption -HistorySaveStyle SaveNothing -PredictionSource History
+function global:Add-HqTestHistory {
+    [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory('Write-Output hq-tab-accepted')
+}
+function global:prompt { 'PS> ' }
+$hqvar = 'tab-completed'
+$hqvar2 = 'tab-cycled'
+"""
+SEED = "Add-HqTestHistory\r"
+TAB = "\t"
+CTRL_SPACE = "\x00"  # xterm.js가 Ctrl+Space로 보내는 글자
+# 회색 미리보기가 그려진 흔적: 친 글자(hq-t) 바로 뒤에 색을 바꾸는 시퀀스가 오고 미리보기의 나머지가 이어진다.
+_SUGGESTION_SHOWN = re.compile(r"hq-t(?:\x1b\[[0-9;]*m)+ab-accepted")
+_CSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _printed_lines(output: str) -> list[str]:
+    """제어 시퀀스를 걷어 낸 화면의 줄들. 명령이 찍은 줄은 프롬프트(PS>) 없이 그 글자만 남는다."""
+    return [line.strip() for line in _CSI.sub("", _visible(output)).split("\r\n")]
+
+
+def _ps_quote(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
+
+
+@functools.cache
+def _psreadline_can_accept_suggestions() -> bool:
+    script = (
+        "Import-Module PSReadLine\n"
+        "Write-Output ($null -ne [Microsoft.PowerShell.PSConsoleReadLine].GetMethod('AcceptSuggestion'))\n"
+    )
+    return run_ps(script).stdout.split() == ["True"]
+
+
+@pytest.fixture
+def needs_accept_suggestion():
+    if not _psreadline_can_accept_suggestions():
+        pytest.skip("이 PC의 PSReadLine에 AcceptSuggestion이 없다(2.1보다 낮다)")
+
+
+def _type_in_a_tab(tmp_path, typed: str, keys: list[str], *, binding: bool = True) -> tuple[str, list[str]]:
+    """기록에 'Write-Output hq-tab-accepted'를 넣고, typed를 친 뒤 keys를 하나씩 누르고 Enter, exit."""
+    (tmp_path / "hq-tab-completed.txt").write_text("", encoding="ascii")  # 'hq-t'의 자동완성 후보는 이것 하나
+    script = (
+        "$ErrorActionPreference = 'Stop'\n"  # 부트스트랩과 같다
+        + TAB_SETUP
+        + f"Set-Location -LiteralPath {_ps_quote(str(tmp_path))}\n"
+        + (bootstrap.tab_binding() if binding else "")
+    )
+    writes = [(0.5, SEED), (2.0, typed)]
+    at = 3.0
+    for key in keys:
+        writes.append((at, key))
+        at += 0.8
+    writes += [(at, "\r"), (at + 0.6, "exit\r")]
+    output, code = run_pty(encoded_argv(script), writes=writes, timeout=60)
+    assert code == 0, output
+    return output, _printed_lines(output)
+
+
+def test_tab_accepts_the_shown_suggestion(tmp_path, needs_accept_suggestion):
+    output, lines = _type_in_a_tab(tmp_path, "Write-Output hq-t", [TAB])
+    assert _SUGGESTION_SHOWN.search(output), repr(output)
+    assert "hq-tab-accepted" in lines, lines
+
+
+def test_tab_completes_as_before_when_no_suggestion_is_shown(tmp_path, needs_accept_suggestion):
+    # 기록에 'Write-Output $hqv'로 시작하는 줄이 없다
+    _, lines = _type_in_a_tab(tmp_path, "Write-Output $hqv", [TAB])
+    assert "tab-completed" in lines, lines
+
+
+def test_repeated_tab_still_cycles_through_completions(tmp_path, needs_accept_suggestion):
+    _, lines = _type_in_a_tab(tmp_path, "Write-Output $hqv", [TAB, TAB])
+    assert "tab-cycled" in lines, lines
+
+
+def test_ctrl_space_still_completes_while_a_suggestion_is_shown(tmp_path, needs_accept_suggestion):
+    # Ctrl+Space(MenuComplete)는 후보가 하나면 바로 채운다. 'hq-t'의 후보는 작업 폴더의 hq-tab-completed.txt다.
+    output, lines = _type_in_a_tab(tmp_path, "Write-Output hq-t", [CTRL_SPACE])
+    assert _SUGGESTION_SHOWN.search(output), repr(output)
+    assert r".\hq-tab-completed.txt" in lines, lines
+    assert "hq-tab-accepted" not in lines, lines
+
+
+def test_control_without_the_binding_tab_does_not_take_the_suggestion(tmp_path, needs_accept_suggestion):
+    # 대조군: 같은 도구, 같은 입력이고 미리보기도 보였다. 키 설정이 없으면 Tab은 미리보기를 받지 않는다.
+    # 그래서 위 시험의 hq-tab-accepted는 키 설정 덕분이다.
+    output, lines = _type_in_a_tab(tmp_path, "Write-Output hq-t", [TAB], binding=False)
+    assert _SUGGESTION_SHOWN.search(output), repr(output)
+    assert "hq-tab-accepted" not in lines, lines
+
+
+_KEYS_REPORT = (
+    "foreach ($k in 'Tab', 'Shift+Tab', 'RightArrow', 'F2', 'Ctrl+Spacebar') {"
+    ' Write-Output ("$k=" + (Get-PSReadLineKeyHandler -Chord $k).Function) }\n'
+)
+
+
+def test_tab_binding_changes_tab_and_nothing_else(needs_accept_suggestion):
+    script = (
+        "Import-Module PSReadLine\n"
+        + _KEYS_REPORT
+        + "$ErrorActionPreference = 'Stop'\n"
+        + bootstrap.tab_binding()
+        + _KEYS_REPORT
+    )
+    result = run_ps(script)
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    before, after = lines[:5], lines[5:]
+    assert before[0] == "Tab=TabCompleteNext", lines
+    assert after[0] == "Tab=AcceptSuggestionOrTabComplete", lines
+    assert after[1:] == before[1:], lines
+
+
+def test_tab_binding_is_silent_when_psreadline_is_not_loaded():
+    # -NonInteractive에서는 PSReadLine을 불러오지 않는다. 그래도 오류 없이 지나가고 아무것도 찍지 않는다.
+    loaded = "Write-Output ([bool]('Microsoft.PowerShell.PSConsoleReadLine' -as [type]))\n"
+    script = loaded + "$ErrorActionPreference = 'Stop'\n" + bootstrap.tab_binding() + loaded
+    result = run_ps(script)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["False", "False"], result.stdout
+    assert 'S="Error"' not in result.stderr, result.stderr
+
+
+def test_tab_binding_leaves_psreadline_2_0_alone():
+    # Windows에 들어 있는 PSReadLine 2.0.0에는 AcceptSuggestion이 없다. Tab은 그대로 두고 아무것도 찍지 않는다.
+    script = (
+        "if (-not (Get-Module PSReadLine -ListAvailable | Where-Object { $_.Version -eq [version]'2.0.0' })) {"
+        " Write-Output 'no-2.0.0'; exit }\n"
+        "Import-Module PSReadLine -RequiredVersion 2.0.0\n"
+        "$ErrorActionPreference = 'Stop'\n"
+        + bootstrap.tab_binding()
+        + "Write-Output ((Get-PSReadLineKeyHandler | Where-Object { $_.Key -eq 'Tab' }).Function)\n"
+    )
+    result = run_ps(script)
+    if result.stdout.strip() == "no-2.0.0":
+        pytest.skip("이 PC에 PSReadLine 2.0.0이 없다")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["TabCompleteNext"], result.stdout
+    assert 'S="Error"' not in result.stderr, result.stderr
+
+
+def test_a_failed_tab_binding_prints_one_line_and_the_script_goes_on(needs_accept_suggestion):
+    # Set-PSReadLineKeyHandler를 실패하는 같은 이름의 함수로 바꿔 둔다(PowerShell은 cmdlet보다 함수를 먼저 찾는다).
+    script = (
+        "$ErrorActionPreference = 'Stop'\n"
+        + TAB_SETUP
+        + "function Set-PSReadLineKeyHandler { throw 'hq-test-failure' }\n"
+        + bootstrap.tab_binding()
+        + "Write-Output ('next' + '-statement')\n"  # 부트스트랩에서는 이 자리에 Enter-PSSession이 온다
+    )
+    output, code = run_pty(encoded_argv(script), writes=[(2.0, "exit\r")])
+    assert code == 0, output
+    lines = _printed_lines(output)
+    message = "Tab으로 미리보기 받기를 켜지 못했습니다: hq-test-failure"
+    assert lines.count(message) == 1, lines
+    assert lines.index(message) < lines.index("next-statement"), lines

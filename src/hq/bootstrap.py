@@ -12,6 +12,9 @@ from hq.paths import resource
 from hq.validation import validate_host, validate_username
 
 MAIN_MARKER = "#region main"
+# Tab으로 회색 미리보기를 받는 키 설정(Task 16b). 테스트가 이 부분만 떼어 내 PC의 PSReadLine으로 돌린다.
+TAB_REGION_START = "#region tab"
+TAB_REGION_END = "#endregion tab"
 _PLACEHOLDER = "__HQ_PARAMS__"
 # json.dumps(ensure_ascii=True)가 만든 문자열 하나("..."). 안에는 출력 가능한 ASCII와 \ 이스케이프만 있다.
 _JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
@@ -83,6 +86,14 @@ def prelude() -> str:
     """안전장치(prompt)와 오류 분류 함수만. 테스트가 접속 없이 이 부분을 돌린다."""
     text = template_text()
     return text[: text.index(MAIN_MARKER)]
+
+
+def tab_binding() -> str:
+    """Tab 키 설정 부분만(#region tab ~ #endregion tab). 테스트가 접속 없이 이 PC의 PSReadLine으로 돌린다."""
+    text = template_text()
+    start = text.index(TAB_REGION_START)
+    end = text.index(TAB_REGION_END, start) + len(TAB_REGION_END)
+    return text[start:end] + "\n"
 
 
 def build_script(params: BootstrapParams) -> str:

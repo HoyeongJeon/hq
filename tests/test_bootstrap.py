@@ -202,3 +202,73 @@ def test_the_ready_marker_cannot_be_a_host_or_user_name():
         validate_host(READY_MARKER)
     with pytest.raises(ValidationError):
         validate_username(READY_MARKER)
+
+
+# ---- Tab으로 회색 미리보기 받기 (Task 16b, 규칙 R16b-1) ----
+
+
+def _code_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+
+
+def test_tab_binding_is_its_own_region_of_the_template():
+    block = bootstrap.tab_binding()
+    assert block.startswith(bootstrap.TAB_REGION_START + "\n"), block
+    assert block.rstrip().endswith(bootstrap.TAB_REGION_END), block
+    assert bootstrap.template_text().count(block) == 1
+
+
+def test_tab_binding_runs_locally_after_the_ready_signal_and_before_enter_pssession():
+    # PSReadLine은 Enter-PSSession 안에서도 이 PC의 셸에서 돈다. 그래서 키는 원격 세션에 들어가기 전에 여기서 건다.
+    script = build_script(PARAMS)
+    block = bootstrap.tab_binding()
+    enter = "\nEnter-PSSession -Session $global:__hq_session\n"
+    assert script.count(block) == 1
+    assert script.index(bootstrap.MAIN_MARKER) < script.index(block)  # 준비 신호 뒤(안전장치 바로 다음 줄은 그대로)
+    assert script.index("$ErrorActionPreference = 'Stop'") < script.index(block)
+    assert script.index(block) < script.index(enter)
+    assert [line for line in _code_lines(script) if "Enter-PSSession" in line] == [enter.strip()]
+    assert _code_lines(script)[-1] == enter.strip()
+
+
+def test_tab_accepts_a_shown_suggestion_and_otherwise_completes_as_before():
+    lines = _code_lines(bootstrap.tab_binding())
+    calls = [line for line in lines if "[Microsoft.PowerShell.PSConsoleReadLine]::" in line]
+    # 미리보기를 받아 보고, 입력 줄이 그대로면(보인 미리보기가 없었으면) 지금의 Tab(TabCompleteNext)을 한다.
+    assert calls == [
+        "[Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$before, [ref]$cursor)",
+        "[Microsoft.PowerShell.PSConsoleReadLine]::AcceptSuggestion($key, $arg)",
+        "[Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$after, [ref]$cursor)",
+        "if ($after -ceq $before) { [Microsoft.PowerShell.PSConsoleReadLine]::TabCompleteNext($key, $arg) }",
+    ], calls
+
+
+def test_tab_binding_binds_only_tab_and_only_when_accept_suggestion_exists():
+    lines = _code_lines(bootstrap.tab_binding())
+    guard = "if ($null -ne $readLine -and $null -ne $readLine.GetMethod('AcceptSuggestion')) {"
+    lookup = "$readLine = 'Microsoft.PowerShell.PSConsoleReadLine' -as [type]"  # 형이 없으면 $null. 던지지 않는다
+    assert lookup in lines
+    assert guard in lines
+    binds = [line for line in lines if "Set-PSReadLineKeyHandler" in line]
+    assert len(binds) == 1, binds  # Shift+Tab, RightArrow, F2 등은 건드리지 않는다
+    assert lines.index(lookup) < lines.index(guard) < lines.index(binds[0])
+    assert "Chord = 'Tab'" in lines
+
+
+def test_a_failed_tab_binding_prints_one_korean_line_and_never_ends_the_tab():
+    lines = _code_lines(bootstrap.tab_binding())
+    assert lines[0] == "try {"
+    assert lines[-3:] == [
+        "} catch {",
+        'Write-Host "Tab으로 미리보기 받기를 켜지 못했습니다: $($_.Exception.Message)"',
+        "}",
+    ]
+    assert not re.search(r"\bexit\b", bootstrap.tab_binding(), re.IGNORECASE)
+
+
+def test_tab_binding_adds_nothing_the_antivirus_blocks_and_nothing_that_connects():
+    code = "\n".join(_code_lines(bootstrap.tab_binding()))
+    for word in ("FromBase64String", "Invoke-Command", "PSSession", "Invoke-Expression", "iex "):
+        assert word not in code, word
+    assert "FromBase64String" not in bootstrap.tab_binding()
+    assert bootstrap.template_text().count("Invoke-Command") == 1  # 별명 프롬프트를 거는 기존 한 곳뿐
