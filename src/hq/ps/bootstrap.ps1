@@ -77,19 +77,34 @@ try {
 try {
     $readLine = 'Microsoft.PowerShell.PSConsoleReadLine' -as [type]
     if ($null -ne $readLine -and $null -ne $readLine.GetMethod('AcceptSuggestion')) {
+        # 자동완성 순환 상태: 이 Tab이 TabCompleteNext로 채운 뒤의 커서와 입력 줄. 다음 Tab 때 줄과 커서가 그대로면
+        # 순환 중이므로 미리보기가 보여도 받지 않고 다음 후보로 간다. 채운 줄로 시작하는 기록이 있으면 PSReadLine이
+        # 그 뒤에 미리보기를 그리는데, 그것을 받으면 후보를 차례로 볼 수 없다. 다른 키로 줄이 바뀌면 순환이 끝나고
+        # 다음 Tab은 다시 받기 아니면 자동완성이다. 키 처리기는 부를 때마다 새 범위에서 돌므로 이 PC 셸의 전역에 둔다.
+        $global:__hq_tab_cycle = $null
         $tabKey = @{
             Chord = 'Tab'
             BriefDescription = 'AcceptSuggestionOrTabComplete'
             Description = '회색 미리보기가 있으면 받아들이고, 없으면 자동완성한다'
             ScriptBlock = {
                 param($key, $arg)
-                $before = $null
-                $after = $null
+                $line = $null
                 $cursor = $null
-                [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$before, [ref]$cursor)
-                [Microsoft.PowerShell.PSConsoleReadLine]::AcceptSuggestion($key, $arg)
-                [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$after, [ref]$cursor)
-                if ($after -ceq $before) { [Microsoft.PowerShell.PSConsoleReadLine]::TabCompleteNext($key, $arg) }
+                [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
+                $accepted = $false
+                if ($global:__hq_tab_cycle -cne "$cursor|$line") {
+                    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptSuggestion($key, $arg)
+                    $after = $null
+                    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$after, [ref]$cursor)
+                    $accepted = $after -cne $line
+                }
+                if ($accepted) {
+                    $global:__hq_tab_cycle = $null
+                } else {
+                    [Microsoft.PowerShell.PSConsoleReadLine]::TabCompleteNext($key, $arg)
+                    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
+                    $global:__hq_tab_cycle = "$cursor|$line"
+                }
             }
         }
         Set-PSReadLineKeyHandler @tabKey

@@ -233,14 +233,35 @@ def test_tab_binding_runs_locally_after_the_ready_signal_and_before_enter_pssess
 
 def test_tab_accepts_a_shown_suggestion_and_otherwise_completes_as_before():
     lines = _code_lines(bootstrap.tab_binding())
-    calls = [line for line in lines if "[Microsoft.PowerShell.PSConsoleReadLine]::" in line]
-    # 미리보기를 받아 보고, 입력 줄이 그대로면(보인 미리보기가 없었으면) 지금의 Tab(TabCompleteNext)을 한다.
-    assert calls == [
-        "[Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$before, [ref]$cursor)",
-        "[Microsoft.PowerShell.PSConsoleReadLine]::AcceptSuggestion($key, $arg)",
-        "[Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$after, [ref]$cursor)",
-        "if ($after -ceq $before) { [Microsoft.PowerShell.PSConsoleReadLine]::TabCompleteNext($key, $arg) }",
-    ], calls
+    words = ("PSConsoleReadLine]::", "__hq_tab_cycle", "$accepted")
+    steps = [line for line in lines if any(word in line for word in words)]
+    # 순환 중이 아니면 미리보기를 받아 보고, 입력 줄이 그대로면(보인 미리보기가 없었으면) 지금의 Tab(TabCompleteNext)을
+    # 한다. 이 Tab이 채운 뒤 줄과 커서가 그대로면 순환 중이므로 미리보기를 받지 않고 다음 후보로 간다(규칙 R16b-2).
+    rl = "[Microsoft.PowerShell.PSConsoleReadLine]::"
+    assert steps == [
+        "$global:__hq_tab_cycle = $null",
+        f"{rl}GetBufferState([ref]$line, [ref]$cursor)",
+        "$accepted = $false",
+        'if ($global:__hq_tab_cycle -cne "$cursor|$line") {',
+        f"{rl}AcceptSuggestion($key, $arg)",
+        f"{rl}GetBufferState([ref]$after, [ref]$cursor)",
+        "$accepted = $after -cne $line",
+        "if ($accepted) {",
+        "$global:__hq_tab_cycle = $null",
+        f"{rl}TabCompleteNext($key, $arg)",
+        f"{rl}GetBufferState([ref]$line, [ref]$cursor)",
+        '$global:__hq_tab_cycle = "$cursor|$line"',
+    ], steps
+
+
+def test_the_completion_cycle_state_is_one_commented_global_of_the_local_shell():
+    block = bootstrap.tab_binding().splitlines()
+    first = next(i for i, line in enumerate(block) if "__hq_tab_cycle" in line)
+    assert block[first].strip() == "$global:__hq_tab_cycle = $null", block[first]
+    assert block[first - 1].lstrip().startswith("#"), "순환 상태를 왜 전역에 두는지 주석으로 적는다"
+    # 키 처리기는 부를 때마다 새 범위에서 돈다. 그래서 코드는 늘 전역으로 부른다.
+    code = "\n".join(_code_lines(bootstrap.tab_binding()))
+    assert code.count("__hq_tab_cycle") == code.count("$global:__hq_tab_cycle") > 0
 
 
 def test_tab_binding_binds_only_tab_and_only_when_accept_suggestion_exists():

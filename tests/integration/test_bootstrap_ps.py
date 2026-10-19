@@ -197,19 +197,23 @@ def test_error_classification():
 # 탭과 같은 방식(-NoLogo -NoProfile -NoExit -EncodedCommand)으로 이 PC의 대화형 PowerShell을 ConPTY에 띄우고,
 # 부트스트랩에 실제로 든 Tab 키 설정 부분(tab_binding)을 돌린 뒤 키를 친다. 어디에도 접속하지 않는다.
 
+
 # 모두 이 시험 프로세스 안에서만 바뀐다. SaveNothing이면 PSReadLine은 사용자의 기록 파일을 읽지도 쓰지도 않는다.
 # PSReadLine은 첫 입력 줄을 읽을 때에야 기록을 만들므로, 그 전(스크립트 안)에 AddToHistory를 부르면
 # NullReferenceException이 난다. 그래서 기록 넣기는 함수로 두고 첫 입력 줄로 부른다. 이 줄에는 기대하는 출력
 # 글자가 없고, 'Write-Output'으로 시작하지 않아 미리보기 후보도 되지 않는다.
-TAB_SETUP = r"""
-Set-PSReadLineOption -HistorySaveStyle SaveNothing -PredictionSource History
-function global:Add-HqTestHistory {
-    [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory('Write-Output hq-tab-accepted')
-}
-function global:prompt { 'PS> ' }
-$hqvar = 'tab-completed'
-$hqvar2 = 'tab-cycled'
-"""
+def _tab_setup(history: str = "Write-Output hq-tab-accepted") -> str:
+    return (
+        "Set-PSReadLineOption -HistorySaveStyle SaveNothing -PredictionSource History\n"
+        "function global:Add-HqTestHistory {\n"
+        f"    [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory({_ps_quote(history)})\n"
+        "}\n"
+        "function global:prompt { 'PS> ' }\n"
+        "$hqvar = 'tab-completed'\n"
+        "$hqvar2 = 'tab-cycled'\n"
+    )
+
+
 SEED = "Add-HqTestHistory\r"
 TAB = "\t"
 CTRL_SPACE = "\x00"  # xterm.js가 Ctrl+Space로 보내는 글자
@@ -242,12 +246,21 @@ def needs_accept_suggestion():
         pytest.skip("이 PC의 PSReadLine에 AcceptSuggestion이 없다(2.1보다 낮다)")
 
 
-def _type_in_a_tab(tmp_path, typed: str, keys: list[str], *, binding: bool = True) -> tuple[str, list[str]]:
-    """기록에 'Write-Output hq-tab-accepted'를 넣고, typed를 친 뒤 keys를 하나씩 누르고 Enter, exit."""
-    (tmp_path / "hq-tab-completed.txt").write_text("", encoding="ascii")  # 'hq-t'의 자동완성 후보는 이것 하나
+def _type_in_a_tab(
+    tmp_path,
+    typed: str,
+    keys: list[str],
+    *,
+    binding: bool = True,
+    history: str = "Write-Output hq-tab-accepted",
+    files: tuple[str, ...] = ("hq-tab-completed.txt",),  # 기본은 'hq-t'의 자동완성 후보가 이것 하나
+) -> tuple[str, list[str]]:
+    """기록에 history 한 줄을 넣고, 작업 폴더에 files를 만든 뒤 typed를 치고 keys를 하나씩 누르고 Enter, exit."""
+    for name in files:
+        (tmp_path / name).write_text("", encoding="ascii")
     script = (
         "$ErrorActionPreference = 'Stop'\n"  # 부트스트랩과 같다
-        + TAB_SETUP
+        + _tab_setup(history)
         + f"Set-Location -LiteralPath {_ps_quote(str(tmp_path))}\n"
         + (bootstrap.tab_binding() if binding else "")
     )
@@ -293,6 +306,44 @@ def test_control_without_the_binding_tab_does_not_take_the_suggestion(tmp_path, 
     output, lines = _type_in_a_tab(tmp_path, "Write-Output hq-t", [TAB], binding=False)
     assert _SUGGESTION_SHOWN.search(output), repr(output)
     assert "hq-tab-accepted" not in lines, lines
+
+
+# 규칙 R16b-2: 자동완성 순환이 시작되면 Tab은 미리보기를 받지 않고 다음 후보로 간다.
+# 'hq-tab-a'의 후보는 두 파일이고, 기록 한 줄이 첫 후보로 시작한다. 그래서 첫 Tab이 .\hq-tab-a1.txt를 채우면
+# PSReadLine이 그 뒤에 회색 미리보기(-from-history)를 그린다.
+CYCLE_FILES = ("hq-tab-a1.txt", "hq-tab-a2.txt")
+CYCLE_HISTORY = r"Write-Output .\hq-tab-a1.txt-from-history"
+
+
+def _suggestion_shown(output: str, typed: str, gray: str) -> bool:
+    """typed 바로 뒤에 색을 바꾸는 시퀀스가 오고 회색 미리보기 gray가 이어져 그려졌는가."""
+    return re.search(re.escape(typed) + r"(?:\x1b\[[0-9;]*m)+" + re.escape(gray), output) is not None
+
+
+def test_tab_keeps_cycling_once_a_completion_cycle_started(tmp_path, needs_accept_suggestion):
+    output, lines = _type_in_a_tab(
+        tmp_path, "Write-Output hq-tab-a", [TAB, TAB], history=CYCLE_HISTORY, files=CYCLE_FILES
+    )
+    assert _suggestion_shown(output, r".\hq-tab-a1.txt", "-from-history"), repr(output)  # 첫 Tab 뒤에 보였다
+    assert r".\hq-tab-a2.txt" in lines, lines
+    assert r".\hq-tab-a1.txt-from-history" not in lines, lines
+
+
+def test_control_the_first_tab_still_accepts_a_shown_suggestion(tmp_path, needs_accept_suggestion):
+    # 대조군: 같은 기록과 같은 후보. 친 글자에 처음부터 미리보기가 보이면 첫 Tab은 그것을 받는다.
+    output, lines = _type_in_a_tab(
+        tmp_path, r"Write-Output .\hq-tab-a1", [TAB], history=CYCLE_HISTORY, files=CYCLE_FILES
+    )
+    assert _suggestion_shown(output, r".\hq-tab-a1", ".txt-from-history"), repr(output)
+    assert r".\hq-tab-a1.txt-from-history" in lines, lines
+
+
+def test_any_other_edit_ends_the_completion_cycle(tmp_path, needs_accept_suggestion):
+    # Tab으로 .\hq-tab-a1.txt를 채운 뒤 글자를 하나 치면 순환이 끝난다. 다음 Tab은 다시 미리보기를 받는다.
+    _, lines = _type_in_a_tab(
+        tmp_path, "Write-Output hq-tab-a", [TAB, "-", TAB], history=CYCLE_HISTORY, files=CYCLE_FILES
+    )
+    assert r".\hq-tab-a1.txt-from-history" in lines, lines
 
 
 _KEYS_REPORT = (
@@ -350,7 +401,7 @@ def test_a_failed_tab_binding_prints_one_line_and_the_script_goes_on(needs_accep
     # Set-PSReadLineKeyHandler를 실패하는 같은 이름의 함수로 바꿔 둔다(PowerShell은 cmdlet보다 함수를 먼저 찾는다).
     script = (
         "$ErrorActionPreference = 'Stop'\n"
-        + TAB_SETUP
+        + _tab_setup()
         + "function Set-PSReadLineKeyHandler { throw 'hq-test-failure' }\n"
         + bootstrap.tab_binding()
         + "Write-Output ('next' + '-statement')\n"  # 부트스트랩에서는 이 자리에 Enter-PSSession이 온다
