@@ -8,8 +8,10 @@ if (-not (Test-Path -LiteralPath $built -PathType Leaf)) {
 $folder = Join-Path $env:LOCALAPPDATA 'Programs\hq'
 $installed = Join-Path $folder 'hq.exe'
 
+#region 쓰기 권한 검사
 # 다른 계정이 바꿔 넣을 수 있는 exe를 바로가기로 실행하면 그 코드가 내 권한으로 돌아 DPAPI 비밀번호를 모두 풀 수 있다.
 # 그래서 내 계정, SYSTEM, Administrators 말고는 누구도 쓸 수 없어야 한다. 권한은 이 스크립트가 바꾸지 않는다.
+# (tests/integration/test_packaging_scripts_ps.py가 이 영역만 떼어 시험한다)
 $allowed = @(
     [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     'S-1-5-18'      # NT AUTHORITY\SYSTEM
@@ -37,12 +39,31 @@ function Assert-OnlyMineCanWrite([string] $Path) {
         $names = ($others | Select-Object -Unique) -join ', '
         throw ("{0}에 내 계정, SYSTEM, Administrators 말고도 쓸 수 있는 계정이 있습니다: {1}. " +
             "다른 계정이 HQ를 바꿔 넣을 수 있으므로 여기서 멈춥니다(바로가기는 만들거나 고치지 않았습니다). " +
-            "이 폴더의 권한을 먼저 확인하세요.") -f $Path, $names
+            "권한을 먼저 확인하세요.") -f $Path, $names
     }
 }
 
+function Assert-OnlyMineCanWriteUpTo([string] $Path, [string] $Root) {
+    # 위 폴더에 쓸 수 있는 계정은 아래 폴더의 이름을 바꾸고 제 폴더를 그 자리에 둘 수 있다. 그래서 $Path부터 $Root(사용자
+    # 프로필 폴더)까지 모두 본다. 그 위(C:\Users, C:\)는 원래 다른 계정에게도 권한이 있으므로 보지 않는다
+    $top = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $dir = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ($dir -ne $top -and -not $dir.StartsWith($top + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$dir 이(가) 사용자 프로필 폴더($top) 밖에 있어 위 폴더들의 권한을 확인할 수 없으므로 여기서 멈춥니다."
+    }
+    while ($true) {
+        Assert-OnlyMineCanWrite $dir
+        if ($dir -eq $top) { break }
+        $dir = Split-Path -Path $dir -Parent
+    }
+}
+#endregion
+
+$profileRoot = [Environment]::GetFolderPath('UserProfile')
 New-Item -ItemType Directory -Force -Path $folder | Out-Null
-Assert-OnlyMineCanWrite $folder
+Assert-OnlyMineCanWriteUpTo $folder $profileRoot
+# 덮어써도 원래 파일의 권한이 남을 수 있으므로 이미 설치된 exe도 복사하기 전에 본다
+if (Test-Path -LiteralPath $installed) { Assert-OnlyMineCanWrite $installed }
 $target = [IO.Path]::GetFullPath($installed)
 $running = @(Get-Process -Name hq -ErrorAction SilentlyContinue | Where-Object {
     $_.Path -and [string]::Equals([IO.Path]::GetFullPath($_.Path), $target, [StringComparison]::OrdinalIgnoreCase)

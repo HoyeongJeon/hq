@@ -75,9 +75,12 @@ def test_the_shortcut_runs_a_copy_that_only_this_account_can_change():
     assert "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value" in text
     assert "'S-1-5-18'" in text and "'S-1-5-32-544'" in text
     assert "Set-Acl" not in text and "icacls" not in text
-    # 복사 전에 폴더 권한과 실행 중인지를 보고, 복사한 뒤 바로가기를 만들기 전에 exe 권한을 다시 본다
+    # 복사 전에: 설치 폴더부터 사용자 프로필 폴더까지 모든 폴더의 권한, 이미 설치된 exe의 권한(덮어써도 그 파일의
+    # 권한이 남는다), 실행 중인지. 복사한 뒤 바로가기를 만들기 전에: 복사한 exe의 권한
+    assert "$profileRoot = [Environment]::GetFolderPath('UserProfile')" in text
     copy = text.index("Copy-Item")
-    assert text.index("Assert-OnlyMineCanWrite $folder") < copy
+    assert text.index("Assert-OnlyMineCanWriteUpTo $folder $profileRoot") < copy
+    assert text.index("if (Test-Path -LiteralPath $installed) { Assert-OnlyMineCanWrite $installed }") < copy
     assert text.index("Get-Process -Name hq") < copy
-    assert copy < text.index("Assert-OnlyMineCanWrite $installed") < text.index("CreateShortcut")
+    assert copy < text.rindex("Assert-OnlyMineCanWrite $installed") < text.index("CreateShortcut")
     assert "HQ를 먼저 닫" in text
