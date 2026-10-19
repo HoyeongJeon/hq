@@ -34,6 +34,15 @@ def test_a_typed_command_lands_in_the_temporary_appdata_history(temp_appdata):
     assert f"Write-Output {marker}" in history.read_text(encoding="utf-8").splitlines(), output
 
 
+def test_child_shells_local_appdata_is_the_temporary_one(temp_appdata, tmp_path):
+    # 이 값이 비면 Windows PowerShell은 ModuleAnalysisCache를 작업 폴더 아래 상대 경로(Microsoft\...)에 쓴다.
+    out = tmp_path / "local.txt"
+    script = "[IO.File]::WriteAllText($env:HQ_OUT, [Environment]::GetFolderPath('LocalApplicationData'))\n"
+    result = run_ps(script, env={"HQ_OUT": str(out)})
+    assert result.returncode == 0, result.stderr
+    assert out.read_text(encoding="utf-8-sig") == str(temp_appdata.parent / "Local")
+
+
 def test_child_shells_still_load_the_users_psreadline(normal_shell):
     # 프로필을 바꾸면 문서 폴더도 바뀐다. 그래도 자식 셸은 평소와 같은 PSReadLine(사용자 모듈 폴더의 것)을 쓴다.
     result = run_ps("Import-Module PSReadLine\nWrite-Output (Get-Module PSReadLine).Version.ToString()\n")

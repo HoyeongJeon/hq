@@ -38,11 +38,16 @@ def temp_appdata(tmp_path_factory, monkeypatch, normal_shell) -> Path:
     기록은 그대로 사용자 폴더로 간다). 그래서 USERPROFILE을 바꾸고 APPDATA도 같은 곳으로 맞춘다.
     USERPROFILE을 바꾸면 문서 폴더도 따라 바뀌어, PSModulePath에 사용자 모듈 폴더가 없을 때(cmd에서 pytest를 띄운
     경우 등) 자식 셸이 그 폴더의 PSReadLine 대신 Windows에 든 2.0.0을 쓴다. 그래서 PSModulePath는 보통 자식 셸이
-    보는 값으로 둔다. hq 코드가 쓰는 LOCALAPPDATA는 건드리지 않는다.
+    보는 값으로 둔다.
+    LOCALAPPDATA 환경 변수(hq 코드가 쓰는 것)는 바꾸지 않는다. 그래도 자식 셸의
+    [Environment]::GetFolderPath('LocalApplicationData')는 USERPROFILE을 따라 임시 프로필의 AppData\\Local이 되고,
+    그 폴더가 없으면 빈 값이 된다. 빈 값이면 Windows PowerShell이 ModuleAnalysisCache를 작업 폴더 아래 상대 경로
+    (Microsoft\\Windows\\PowerShell\\...)에 써서 저장소에 폴더가 생긴다. 그래서 AppData\\Local도 만들어 둔다.
     """
     profile = tmp_path_factory.mktemp("profile")
     appdata = profile / "AppData" / "Roaming"
     appdata.mkdir(parents=True)
+    (profile / "AppData" / "Local").mkdir()
     monkeypatch.setenv("USERPROFILE", str(profile))
     monkeypatch.setenv("APPDATA", str(appdata))
     monkeypatch.setenv("PSModulePath", normal_shell.module_path)
