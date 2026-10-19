@@ -341,7 +341,11 @@ def _run(data: Path) -> None:
     window.events.closing += lambda: allow_close(bridge)
     log.info("HQ 시작")
     try:
-        webview.start(start_pump, (bridge,), debug=False, private_mode=True, icon=str(paths.resource("assets/hq.ico")))
+        # 화면 엔진(WebView2)의 작업 폴더를 hq 자료 폴더 안에 둔다. 주지 않으면 pywebview가 tempfile로 만드는데,
+        # tempfile은 TMPDIR을 먼저 쓴다(모든 사용자가 쓸 수 있는 폴더일 수 있다). 비공개 모드라 pywebview가 창을 닫을 때
+        # 이 폴더를 통째로 지우므로 반드시 전용 하위 폴더여야 한다
+        webview.start(start_pump, (bridge,), debug=False, private_mode=True, storage_path=str(data / "webview"),
+                      icon=str(paths.resource("assets/hq.ico")))
     except Exception:
         log.exception("HQ 창을 띄우지 못함")
         raise

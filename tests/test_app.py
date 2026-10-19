@@ -600,6 +600,17 @@ def test_main_opens_only_the_hq_page_and_shuts_down_after_the_window_closes(laun
     assert not [h for h in logging.getLogger().handlers if getattr(h, "baseFilename", "").endswith("hq.log")]
 
 
+def test_the_screen_engine_keeps_its_work_folder_in_the_hq_data_folder(launch, tmp_path):
+    # 저장 위치를 주지 않으면 pywebview는 비공개 모드의 작업 폴더(WebView2 사용자 데이터)를 tempfile로 만든다.
+    # tempfile은 TMPDIR을 먼저 쓰는데, 이 PC의 TMPDIR은 모든 사용자가 쓸 수 있는 폴더이고 지우지 못한 폴더가 그대로
+    # 남는다. pywebview는 비공개 모드에서 창을 닫을 때 이 폴더를 통째로 지우므로 hq 자료 폴더가 아니라 전용 하위
+    # 폴더여야 한다
+    fake = launch(FakeWebview())
+    ((_, _, options),) = fake.started
+    assert options["private_mode"] is True
+    assert Path(options["storage_path"]) == tmp_path / "hq" / "webview"
+
+
 def test_closing_with_an_open_tab_asks_the_page_and_quit_closes_everything(launch):
     seen = {}
 
