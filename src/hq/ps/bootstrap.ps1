@@ -68,8 +68,8 @@ try {
     Write-Host "프롬프트에 별명을 붙이지 못했습니다: $($_.Exception.Message)"
 }
 #region tab
-# Tab: 회색 미리보기(PSReadLine이 입력 기록에서 고른 예측)가 보이면 받아들이고, 없으면 지금처럼 자동완성한다
-# (TabCompleteNext라서 Tab을 거듭 누르면 후보가 차례로 바뀐다). PSReadLine은 Enter-PSSession 안에서도 이 PC의
+# Tab: 커서가 줄 끝에 있고 회색 미리보기(PSReadLine이 입력 기록에서 고른 예측)가 보이면 받아들이고, 아니면 지금처럼
+# 자동완성한다(TabCompleteNext라서 Tab을 거듭 누르면 후보가 차례로 바뀐다). PSReadLine은 Enter-PSSession 안에서도 이 PC의
 # 셸에서 돌므로 원격 세션에 들어가기 전에 여기서 건다. 자동완성 후보는 PSReadLine이 원격 세션에 물어 온다.
 # 미리보기가 보였는지는 AcceptSuggestion 앞뒤의 입력 줄을 견주어 안다(받을 미리보기가 없으면 줄이 그대로다).
 # AcceptSuggestion은 PSReadLine 2.1부터 있다. PSReadLine이 없거나 그보다 낮으면 Tab을 그대로 두고 아무것도 찍지 않는다.
@@ -92,7 +92,8 @@ try {
                 $cursor = $null
                 [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
                 $accepted = $false
-                if ($global:__hq_tab_cycle -cne "$cursor|$line") {
+                # 미리보기는 줄 끝에 붙는다. RightArrow처럼 커서가 줄 끝에 있을 때만 받고, 아니면 그 자리를 자동완성한다.
+                if ($cursor -eq $line.Length -and $global:__hq_tab_cycle -cne "$cursor|$line") {
                     [Microsoft.PowerShell.PSConsoleReadLine]::AcceptSuggestion($key, $arg)
                     $after = $null
                     [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$after, [ref]$cursor)

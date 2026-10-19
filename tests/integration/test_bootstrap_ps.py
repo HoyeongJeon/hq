@@ -217,6 +217,7 @@ def _tab_setup(history: str = "Write-Output hq-tab-accepted") -> str:
 SEED = "Add-HqTestHistory\r"
 TAB = "\t"
 CTRL_SPACE = "\x00"  # xterm.js가 Ctrl+Space로 보내는 글자
+LEFT = "\x1b[D"
 # 회색 미리보기가 그려진 흔적: 친 글자(hq-t) 바로 뒤에 색을 바꾸는 시퀀스가 오고 미리보기의 나머지가 이어진다.
 _SUGGESTION_SHOWN = re.compile(r"hq-t(?:\x1b\[[0-9;]*m)+ab-accepted")
 _CSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -279,6 +280,14 @@ def test_tab_accepts_the_shown_suggestion(tmp_path, needs_accept_suggestion):
     output, lines = _type_in_a_tab(tmp_path, "Write-Output hq-t", [TAB])
     assert _SUGGESTION_SHOWN.search(output), repr(output)
     assert "hq-tab-accepted" in lines, lines
+
+
+def test_tab_completes_at_the_cursor_when_it_is_not_at_the_end_of_the_line(tmp_path, needs_accept_suggestion):
+    # 미리보기는 줄 끝에 붙는다. 커서가 줄 가운데 있으면 RightArrow처럼 받지 않고 지금처럼 그 자리를 자동완성한다.
+    output, lines = _type_in_a_tab(tmp_path, "Write-Output hq-t", [LEFT, LEFT, LEFT, TAB])
+    assert _SUGGESTION_SHOWN.search(output), repr(output)
+    assert r".\hq-tab-completed.txt" in lines, lines
+    assert "hq-tab-accepted" not in lines, lines
 
 
 def test_tab_completes_as_before_when_no_suggestion_is_shown(tmp_path, needs_accept_suggestion):
