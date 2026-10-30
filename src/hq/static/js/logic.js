@@ -81,7 +81,8 @@
     USER_EXIT: { short: '세션 종료', text: '세션을 종료했습니다.', actions: ['reconnect'] },
     AUTH_FAILED: {
       short: '로그인 거부',
-      text: '로그인 거부: 비밀번호가 틀렸거나, Administrator가 아닌 로컬 계정이면 서버에 원격 관리자 설정이 필요합니다.',
+      text: '로그인 거부: 비밀번호가 틀렸거나, 도메인 계정을 도메인 없이 적었을 수 있습니다(도메인\\계정으로 적습니다). '
+        + 'Administrator가 아닌 로컬 계정이면 서버에 원격 관리자 설정이 필요합니다.',
       actions: ['password', 'setup'],
     },
     UNREACHABLE: {

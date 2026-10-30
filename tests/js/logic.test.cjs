@@ -77,6 +77,15 @@ test('endedView covers every reason and falls back to UNKNOWN', () => {
   assert.equal(L.endedView('DISCONNECTED').actions[0].label, '다시 연결');
 });
 
+test('endedView AUTH_FAILED adds the missing domain to the two earlier causes', () => {
+  const view = L.endedView('AUTH_FAILED');
+  assert.equal(view.short, '로그인 거부');
+  assert.ok(view.text.startsWith('로그인 거부: 비밀번호가 틀렸거나, '), view.text);
+  assert.ok(view.text.includes('도메인 계정'), view.text);
+  assert.ok(view.text.includes('도메인\\계정'), view.text);
+  assert.ok(view.text.includes('Administrator가 아닌 로컬 계정이면 서버에 원격 관리자 설정이 필요합니다.'), view.text);
+});
+
 test('endedView explains NOT_READY', () => {
   assert.deepEqual(L.endedView('NOT_READY'), {
     short: '시작 안 됨',

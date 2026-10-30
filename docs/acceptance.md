@@ -4,6 +4,8 @@
 
 **건드리지 않기로 정한 운영 서버는 어떤 확인에도 쓰지 않는다.**
 
+**이 PC의 PowerShell과 HQ 탭을 구별한다.** 아래에서 "이 PC의 PowerShell"은 시작 메뉴에서 연 Windows PowerShell 창이고, 프롬프트가 `PS C:\...>`로 시작한다. HQ 탭의 프롬프트는 `[서버 주소]:`로 시작한다(AC-3의 `[host]: [별명] PS C:\...>`). HQ 탭에 친 명령은 서버에서 실행되므로, 이 PC의 PowerShell에서 돌리라는 명령을 HQ 탭에 붙여 넣으면 이 PC가 아니라 서버를 검사하게 된다.
+
 확인한 날짜: (YYYY-MM-DD)
 
 체크포인트에서 이미 확인한 항목은 그 아래 괄호에 적어 두었다. 칸은 이번에 확인하고 직접 체크한다.
@@ -15,7 +17,7 @@
       (체크포인트 C에서 exe로 확인함, 2026-10-19. 체크포인트에서 쓴 서버 한 대에서만 확인했다)
 - [ ] AC-4 2008 R2부터 2025까지 OS별로 한 대 이상에서 `hostname`, `Get-Service`, `ipconfig`가 정상 출력되고 한글이 깨지지 않는다.
       확인한 서버: 2008 R2 ( ) / 2012 R2 ( ) / 2016 ( ) / 2019 ( ) / 2022 ( ) / 2025 ( )
-- [ ] AC-5 누군가 같은 서버에 Administrator로 RDP 접속해 있어도, hq로 들어갔을 때 그 RDP 세션이 끊기지 않는다.
+- [ ] AC-5 누군가 같은 서버에 RDP로 접속해 있을 때 hq로 그 RDP 세션과 같은 계정(예: Administrator)으로 들어가도, 그 RDP 세션이 끊기지 않는다.
 - [ ] AC-6 탭 5개(서버 3대 + 같은 서버 2개)를 오가며 오래 걸리는 명령(`1..60 | % { $_; Start-Sleep 1 }`)을 돌려도 출력이 섞이거나 끊기지 않는다.
 - [ ] AC-7 열린 탭이 있을 때 창을 닫으면 확인을 묻는다. 닫은 뒤 서버에서 `Get-WSManInstance -ResourceURI shell -Enumerate`로 봤을 때 hq 세션이 남아 있지 않다.
       (체크포인트 B에서 개발 실행으로 확인함, 2026-10-19)
@@ -26,15 +28,15 @@
 
   1. HQ 탭에서 `Start-Sleep 5; Stop-Process -Id $PID -Force`를 치고 Enter를 누른다. 5초 뒤에 연결이 끊긴다.
   2. 그 5초 안에 `New-Item -ItemType File $HOME\hq-ac8.txt`를 치고 Enter를 누른다. 이 입력은 서버가 아직 바쁠 때 미리 쳐 둔 입력이 된다. 치는 글자가 화면에 보이지 않을 수 있는데 정상이다.
-  3. "연결 끊김"이 뜬 뒤 이 PC의 PowerShell(HQ 탭이 아닌 내 PC의 창)에서 `Test-Path $HOME\hq-ac8.txt`를 실행한다. `False`여야 한다. `True`면 미리 친 명령이 내 PC에서 실행된 것이므로 실패다.
+  3. "연결 끊김"이 뜬 뒤 이 PC의 PowerShell(맨 위 참고)에서 `Test-Path $HOME\hq-ac8.txt`를 실행한다. `False`여야 한다. `True`면 미리 친 명령이 내 PC에서 실행된 것이므로 실패다.
 
   2번의 Enter가 "연결 끊김"보다 늦었으면 그 회는 미리 쳐 둔 입력을 시험한 것이 아니므로 세지 않고 다시 한다. 파일이 생긴 적이 있으면 이 PC의 PowerShell에서 `Remove-Item $HOME\hq-ac8.txt`로 지운다.
 
 - [ ] AC-9 `%LOCALAPPDATA%\hq` 아래 어떤 파일(로그 포함)에도 비밀번호가 평문으로 없다. 다른 Windows 계정으로는 비밀번호 파일을 풀 수 없다.
 
-  평문 검사: HQ에 저장해 둔 서버 비밀번호 하나로, HQ를 띄운 채로 한 번, 닫은 뒤 한 번 내 PowerShell에서 실행한다. 아래 블록을 `& {`부터 `}`까지 한 번에 붙여 넣고, `찾을 비밀번호` 칸이 뜨면 비밀번호를 친다. 비밀번호는 그 칸에만 치므로 명령줄과 PSReadLine 기록에 남지 않고, 블록 안의 변수는 블록이 끝나면 함께 사라진다.
+  평문 검사: HQ에 저장해 둔 서버 비밀번호 하나로, HQ를 띄운 채로 한 번, 닫은 뒤 한 번 이 PC의 PowerShell(맨 위 참고)에서 실행한다. 아래 블록을 `& {`부터 `}`까지 한 번에 붙여 넣고, `찾을 비밀번호` 칸이 뜨면 비밀번호를 친다. 비밀번호는 그 칸에만 치므로 명령줄과 PSReadLine 기록에 남지 않고, 블록 안의 변수는 블록이 끝나면 함께 사라진다.
 
-  판정: `검사한 파일: N개`(N은 1 이상) 아래에 아무 경로도 나오지 않으면 통과. 경로가 나오면 그 파일에 비밀번호가 평문으로 있다는 뜻이므로 실패다. 빨간 오류 가운데 `다른 프로세스에서 사용 중이므로`(영어 `being used by another process`) 오류만 HQ가 열어 둔 파일을 읽지 못했다는 뜻이다. 경고가 나오거나, `검사한 파일` 줄이 없거나 0개이거나, `'Pattern' 매개 변수가 null`(영어 `parameter 'Pattern' because it is null`) 같은 오류가 나오면 아무것도 검사하지 않은 것이므로 다시 실행한다.
+  판정: `검사한 파일: N개`(N은 1 이상) 아래에 아무 경로도 나오지 않으면 통과. 경로가 나오면 그 파일에 비밀번호가 평문으로 있다는 뜻이므로 실패다. 빨간 오류 가운데 `다른 프로세스에서 사용 중이므로`(영어 `being used by another process`)와 `파일의 일부를 잠갔기 때문에`(영어 `locked a portion of the file`) 오류는 둘 다 HQ가 열어 둔 파일을 읽지 못했다는 뜻이다. 뒤의 것은 HQ가 띄운 WebView2의 LOCK 파일에서 나오고, 한국어 Windows에서도 영어로 나올 수 있다. HQ를 띄운 채로 돌릴 때는 이 두 오류만 나와도 되고, HQ를 닫은 뒤에 돌린 결과에는 이런 오류도 없어야 통과다. 경고가 나오거나, `검사한 파일` 줄이 없거나 0개이거나, `'Pattern' 매개 변수가 null`(영어 `parameter 'Pattern' because it is null`) 같은 오류가 나오면 아무것도 검사하지 않은 것이므로 다시 실행한다.
 
   ```powershell
   & {
@@ -48,7 +50,7 @@
   }
   ```
 
-  다른 계정 검사: 이 PC에 다른 Windows 계정이 없으면 건너뛰고 이 줄에 `건너뜀(다른 계정 없음)`이라고 적는다. 있으면 먼저 내 PowerShell에서 비밀번호 파일 하나를 공용 폴더에 복사하고, 다른 계정으로 PowerShell을 띄운다(`<다른 계정>`을 그 계정 이름으로 바꾼다).
+  다른 계정 검사: 이 PC에 다른 Windows 계정이 없으면 건너뛰고 이 줄에 `건너뜀(다른 계정 없음)`이라고 적는다. 있으면 먼저 이 PC의 PowerShell(맨 위 참고)에서 비밀번호 파일 하나를 공용 폴더에 복사하고, 다른 계정으로 PowerShell을 띄운다(`<다른 계정>`을 그 계정 이름으로 바꾼다).
 
   ```powershell
   Copy-Item -LiteralPath (Get-ChildItem "$env:LOCALAPPDATA\hq\secrets\*.dpapi" | Select-Object -First 1).FullName -Destination C:\Users\Public\hq-dpapi-test.dpapi
@@ -61,13 +63,13 @@
   ConvertTo-SecureString (Get-Content C:\Users\Public\hq-dpapi-test.dpapi)
   ```
 
-  끝나면 내 PowerShell에서 복사본을 지운다.
+  끝나면 다른 계정의 창을 닫고, 처음의 이 PC의 PowerShell(맨 위 참고)에서 복사본을 지운다.
 
   ```powershell
   Remove-Item C:\Users\Public\hq-dpapi-test.dpapi
   ```
 
-- [ ] AC-10 HQ가 떠 있을 때 HQ와 HQ가 띄운 프로세스(WebView2 등) 어느 것도 수신 포트를 열지 않는다. HQ를 띄우고 탭을 하나 연 채로 내 PowerShell에서 아래를 실행해 아무것도 나오지 않으면 통과. `Get-Process`가 빨간 오류를 내면 HQ가 떠 있지 않은 것이므로 통과가 아니다.
+- [ ] AC-10 HQ가 떠 있을 때 HQ와 HQ가 띄운 프로세스(WebView2 등) 어느 것도 수신 포트를 열지 않는다. HQ를 띄우고 탭을 하나 연 채로 이 PC의 PowerShell(맨 위 참고)에서 아래를 실행해 아무것도 나오지 않으면 통과. `Get-Process`가 빨간 오류를 내면 HQ가 떠 있지 않은 것이므로 통과가 아니다.
       (체크포인트 C에서 exe로 확인함, 2026-10-19)
 
   ```powershell

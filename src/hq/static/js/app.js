@@ -10,7 +10,7 @@
 
   const L = window.HQ;
   const $ = (selector) => document.querySelector(selector);
-  const USERNAME_HINT = '서버의 로컬 계정. 예) Administrator, opsadmin';
+  const USERNAME_HINT = '로컬 계정은 그대로, 도메인 계정은 도메인\\계정. 예) Administrator, CONTOSO\\opsadmin';
   const TERM_THEME = {
     background: '#0a0d12',
     foreground: '#d6dde8',

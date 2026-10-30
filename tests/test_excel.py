@@ -62,6 +62,16 @@ def test_template_round_trips_with_text_format(tmp_path):
     assert workbook["서버"]["F2"].number_format == "@"
 
 
+def test_template_help_shows_how_to_write_a_local_and_a_domain_id(tmp_path):
+    # 도메인에 가입된 서버에서 접두 없는 계정은 서버의 로컬 계정으로 확인되어 거부된다(체크포인트 D)
+    path = tmp_path / "양식.xlsx"
+    write_template(path)
+    lines = [row[0] for row in load_workbook(path)["설명"].iter_rows(values_only=True) if row[0]]
+    id_line = next(line for line in lines if line.startswith("4. ID:"))
+    for part in ("로컬 계정", "Administrator", "도메인 계정", "도메인\\계정", "CONTOSO\\opsadmin"):
+        assert part in id_line, id_line
+
+
 def test_numbers_become_text_and_only_the_password_keeps_spaces(tmp_path):
     path = make_xlsx(tmp_path / "a.xlsx", [[" WEB ", None, "10.0.1.21", None, "Administrator", 12345678, None],
                                            ["DB", None, "10.0.1.31", None, "opsadmin", 1234.0, None],

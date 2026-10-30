@@ -557,6 +557,9 @@ def test_even_without_the_watcher_powershell_can_no_longer_switch_back_from_anot
     output, code = run_pty(encoded_argv(script), writes=[(0.2, TYPED_HERE_OR_THERE)], timeout=40)
     assert _loaded_readline(tmp_path) == readline, output
     assert not (tmp_path / "ran-in-client.txt").exists(), output
+    # 미리 친 줄은 읽히지 않은 채 남은 것이 아니라 끊긴 원격 세션으로 가서 실패했다. 그 오류에 런스페이스 상태
+    # 'Broken'이 나온다(상태 이름은 번역되지 않는다). 서버 쪽 prompt의 실패는 오류 없이 맨 'PS>'만 찍는다.
+    assert "'Broken'" in output, output
     assert code == 20, output
 
 
@@ -574,6 +577,7 @@ def test_control_with_the_old_entry_the_line_typed_ahead_runs_here(tmp_path, loc
 def test_lines_typed_before_and_during_the_disconnect_never_run_here(tmp_path, local_server, normal_shell):
     # AC-8과 같은 모양: 서버를 0.7초 뒤에 끝내는 명령을 치고, 끊기기 전부터 끊긴 뒤까지 0.1초마다 한 줄씩 친다.
     # 서버가 아직 살아 있을 때 읽힌 줄은 서버에서 실행돼도 된다. 탭에서는 하나도 실행되면 안 된다.
+    # 사용자의 AC-8 순서를 흉내 낸 연기 시험이다(고치기 전에도 통과한다). 경쟁은 위의 결정적인 시험들이 잡는다.
     script = _tab_into_local_server(normal_shell.psreadline, _MARKS_PROMPT)
     writes = [(1.5, "Start-Sleep -Milliseconds 700; Stop-Process -Id $PID -Force\r")]
     writes += [(1.6 + 0.1 * k, TYPED_HERE_OR_THERE) for k in range(20)]
