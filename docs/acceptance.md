@@ -34,9 +34,9 @@
 
 - [ ] AC-9 `%LOCALAPPDATA%\hq` 아래 어떤 파일(로그 포함)에도 비밀번호가 평문으로 없다. 다른 Windows 계정으로는 비밀번호 파일을 풀 수 없다.
 
-  평문 검사: HQ에 저장해 둔 서버 비밀번호 하나로, HQ를 띄운 채로 한 번, 닫은 뒤 한 번 이 PC의 PowerShell(맨 위 참고)에서 실행한다. 아래 블록을 `& {`부터 `}`까지 한 번에 붙여 넣고, `찾을 비밀번호` 칸이 뜨면 비밀번호를 친다. 비밀번호는 그 칸에만 치므로 명령줄과 PSReadLine 기록에 남지 않고, 블록 안의 변수는 블록이 끝나면 함께 사라진다.
+  평문 검사: HQ에 저장해 둔 서버 비밀번호 하나로, HQ를 띄운 채로 한 번, HQ를 닫고 몇 초 기다린 뒤 한 번 이 PC의 PowerShell(맨 위 참고)에서 실행한다(창이 닫힌 뒤에도 WebView2가 잠깐 파일을 쥐고 있을 수 있다). 아래 블록을 `& {`부터 `}`까지 한 번에 붙여 넣고, `찾을 비밀번호` 칸이 뜨면 비밀번호를 친다. 비밀번호는 그 칸에만 치므로 명령줄과 PSReadLine 기록에 남지 않고, 블록 안의 변수는 블록이 끝나면 함께 사라진다.
 
-  판정: `검사한 파일: N개`(N은 1 이상) 아래에 아무 경로도 나오지 않으면 통과. 경로가 나오면 그 파일에 비밀번호가 평문으로 있다는 뜻이므로 실패다. 빨간 오류 가운데 `다른 프로세스에서 사용 중이므로`(영어 `being used by another process`)와 `파일의 일부를 잠갔기 때문에`(영어 `locked a portion of the file`) 오류는 둘 다 HQ가 열어 둔 파일을 읽지 못했다는 뜻이다. 뒤의 것은 HQ가 띄운 WebView2의 LOCK 파일에서 나오고, 한국어 Windows에서도 영어로 나올 수 있다. HQ를 띄운 채로 돌릴 때는 이 두 오류만 나와도 되고, HQ를 닫은 뒤에 돌린 결과에는 이런 오류도 없어야 통과다. 경고가 나오거나, `검사한 파일` 줄이 없거나 0개이거나, `'Pattern' 매개 변수가 null`(영어 `parameter 'Pattern' because it is null`) 같은 오류가 나오면 아무것도 검사하지 않은 것이므로 다시 실행한다.
+  판정: `검사한 파일: N개`(N은 1 이상) 아래에 아무 경로도 나오지 않으면 통과. 경로가 나오면 그 파일에 비밀번호가 평문으로 있다는 뜻이므로 실패다. 빨간 오류는 문장 전체를 맞춰 보지 말고 들어 있는 낱말만 본다. 오류 문장에 `사용 중`이나 `잠갔`이 들어 있거나, 영어로 `being used by another process`나 `locked a portion of the file`이 들어 있으면 HQ가 열어 두고 있는 파일(WebView2의 LOCK 파일 등)을 읽지 못했다는 뜻이다. Windows 표시 언어가 영어이면 이 오류는 영어로 나온다. HQ를 띄운 채로 돌릴 때는 이런 오류만 나와도 되고, HQ를 닫은 뒤에 돌린 결과에는 이런 오류도 없어야 통과다. 경고가 나오거나, `검사한 파일` 줄이 없거나 0개이거나, `'Pattern' 매개 변수가 null`(영어 `parameter 'Pattern' because it is null`) 같은 오류가 나오면 아무것도 검사하지 않은 것이므로 다시 실행한다.
 
   ```powershell
   & {
@@ -63,7 +63,7 @@
   ConvertTo-SecureString (Get-Content C:\Users\Public\hq-dpapi-test.dpapi)
   ```
 
-  끝나면 다른 계정의 창을 닫고, 처음의 이 PC의 PowerShell(맨 위 참고)에서 복사본을 지운다.
+  끝나면 다른 계정의 창을 닫고, 처음에 쓰던 이 PC의 PowerShell 창(맨 위 참고)에서 복사본을 지운다.
 
   ```powershell
   Remove-Item C:\Users\Public\hq-dpapi-test.dpapi
