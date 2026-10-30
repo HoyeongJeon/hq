@@ -1,13 +1,16 @@
 # hq 접속 스크립트. 탭의 powershell.exe(내 PC)에서 실행된 뒤 원격 세션으로 들어간다.
 # 맨 앞의 prompt 함수가 안전장치다. 이 로컬 셸이 자기 프롬프트를 띄우려는 순간(원격 세션이
-# 끝났거나 시작되지 못함) 프롬프트 대신 세션을 정리하고 프로세스를 끝낸다. PowerShell은
-# 입력을 읽기 전에 프롬프트를 먼저 그리므로, 서버에 치려던 입력이 내 PC에서 실행될 틈이 없다.
+# 끝났거나 시작되지 못함) 프롬프트 대신 세션을 정리하고 프로세스를 끝낸다. PowerShell은 입력 루프의 스레드에서
+# 내 PC의 셸로 돌아오면 입력을 읽기 전에 프롬프트를 먼저 그리므로, 서버에 치려던 입력이 내 PC에서 실행될 틈이 없다.
+# 다른 스레드에서 돌아오는 길은 맨 끝의 들어가기 부분이 막는다.
 function global:prompt {
     $code = 1
     try {
         $s = $global:__hq_session
         if ($null -ne $s) {
             if ("$($s.State)" -eq 'Opened') { $code = 0 } else { $code = 20 }
+            # 세션을 지우면 상태가 Closing, Closed로 바뀐다. 들어가기 부분의 끊김 감시가 그것을 끊김(20)으로 보지 않게 먼저 내린다.
+            Unregister-Event -SourceIdentifier hq.session -ErrorAction SilentlyContinue
             Remove-PSSession -Session $s -ErrorAction SilentlyContinue
         }
     } catch { } finally { [Environment]::Exit($code) }
@@ -114,4 +117,30 @@ try {
     Write-Host "Tab으로 미리보기 받기를 켜지 못했습니다: $($_.Exception.Message)"
 }
 #endregion tab
+#region enter
+# 들어가기. Enter-PSSession을 하면 PowerShell(콘솔 호스트)이 세션의 상태 변화에 처리기를 건다. 세션이 끝나면
+# (Closing, Closed, Broken, Disconnected) 그 처리기가 원격 통신 스레드에서 탭을 내 PC의 런스페이스로 되돌린다.
+# 이 되돌리기가 PowerShell이 원격 프롬프트를 그리는 도중에 오면, PowerShell은 실패한 원격 프롬프트 대신 맨 'PS>'를
+# 찍고 미리 쳐 둔 줄 하나를 내 PC에서 실행한 다음에야 내 PC의 prompt(안전장치)를 부른다(spec 7.3).
+# 그래서 그 처리기를 떼고, 세션이 끝나면 되돌리는 대신 프로세스를 20으로 끝내는 감시를 건다. 내 PC로 돌아오는 길은
+# 입력 루프의 스레드에만 남는다(명령이 끝났는데 세션이 열려 있지 않을 때, exit). 그 뒤에는 늘 prompt를 먼저 그린다.
+# 감시와 뗄 처리기는 들어가기 전에 준비한다. 준비하지 못하면 안전장치를 다 걸지 못한 것이므로 세션에 들어가지 않고
+# 세션을 지운 뒤 1(알 수 없는 오류)로 끝낸다. 콘솔 호스트의 처리기는 공개되지 않아 리플렉션으로 찾는다.
+try {
+    $nonPublic = [Reflection.BindingFlags]'Instance, NonPublic'
+    $consoleHost = $Host.GetType().GetProperty('ExternalHost', $nonPublic).GetValue($Host)
+    $switchBack = [Delegate]::CreateDelegate(
+        [EventHandler[System.Management.Automation.Runspaces.RunspaceStateEventArgs]], $consoleHost,
+        $consoleHost.GetType().GetMethod('HandleRemoteRunspaceStateChanged', $nonPublic))
+    # 감시의 -Action은 이 PC의 셸에서 돈다. 입력을 기다리는 동안 PSReadLine이 0.3초마다 이벤트를 처리하고,
+    # PSReadLine이 없으면 PowerShell이 바로 처리한다.
+    $null = Register-ObjectEvent -InputObject $global:__hq_session.Runspace -EventName StateChanged -SourceIdentifier hq.session -Action {
+        if (@('Closing', 'Closed', 'Broken', 'Disconnected') -contains "$($EventArgs.RunspaceStateInfo.State)") { [Environment]::Exit(20) }
+    }
+} catch {
+    Write-Host "끊김 안전장치를 걸지 못해 접속하지 않습니다: $($_.Exception.Message)"
+    try { Remove-PSSession -Session $global:__hq_session -ErrorAction SilentlyContinue } finally { [Environment]::Exit(1) }
+}
 Enter-PSSession -Session $global:__hq_session
+$global:__hq_session.Runspace.remove_StateChanged($switchBack)
+#endregion enter

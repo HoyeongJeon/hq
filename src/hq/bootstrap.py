@@ -15,6 +15,9 @@ MAIN_MARKER = "#region main"
 # Tab으로 회색 미리보기를 받는 키 설정(Task 16b). 테스트가 이 부분만 떼어 내 PC의 PSReadLine으로 돌린다.
 TAB_REGION_START = "#region tab"
 TAB_REGION_END = "#endregion tab"
+# 원격 세션에 들어가는 부분(Task D-2). 테스트가 이 부분만 떼어 이 PC의 다른 PowerShell에 연 세션으로 돌린다.
+ENTRY_REGION_START = "#region enter"
+ENTRY_REGION_END = "#endregion enter"
 _PLACEHOLDER = "__HQ_PARAMS__"
 # json.dumps(ensure_ascii=True)가 만든 문자열 하나("..."). 안에는 출력 가능한 ASCII와 \ 이스케이프만 있다.
 _JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
@@ -88,12 +91,21 @@ def prelude() -> str:
     return text[: text.index(MAIN_MARKER)]
 
 
+def _region(start_marker: str, end_marker: str) -> str:
+    text = template_text()
+    start = text.index(start_marker)
+    end = text.index(end_marker, start) + len(end_marker)
+    return text[start:end] + "\n"
+
+
 def tab_binding() -> str:
     """Tab 키 설정 부분만(#region tab ~ #endregion tab). 테스트가 접속 없이 이 PC의 PSReadLine으로 돌린다."""
-    text = template_text()
-    start = text.index(TAB_REGION_START)
-    end = text.index(TAB_REGION_END, start) + len(TAB_REGION_END)
-    return text[start:end] + "\n"
+    return _region(TAB_REGION_START, TAB_REGION_END)
+
+
+def session_entry() -> str:
+    """원격 세션에 들어가는 부분만(#region enter ~ #endregion enter). 테스트가 이 PC 안의 세션으로 돌린다."""
+    return _region(ENTRY_REGION_START, ENTRY_REGION_END)
 
 
 def build_script(params: BootstrapParams) -> str:

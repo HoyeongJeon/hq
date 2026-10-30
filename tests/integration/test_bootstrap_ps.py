@@ -1,8 +1,13 @@
 import functools
+import os
 import re
+import subprocess
+import threading
+import time
+from pathlib import Path
 
 import pytest
-from ps import parse_errors, run_ps
+from ps import POWERSHELL, parse_errors, run_ps
 from ptyrun import run_pty
 
 from hq import bootstrap
@@ -421,3 +426,219 @@ def test_a_failed_tab_binding_prints_one_line_and_the_script_goes_on(needs_accep
     message = "Tab으로 미리보기 받기를 켜지 못했습니다: hq-test-failure"
     assert lines.count(message) == 1, lines
     assert lines.index(message) < lines.index("next-statement"), lines
+
+
+# ---- 원격 쪽이 끝날 때 미리 친 입력 (Task D-2, spec 7.3) ----
+# 서버 대신 이 PC의 powershell.exe를 하나 더 띄우고, 탭은 그 프로세스에 이름 있는 파이프로 원격 세션을 연다
+# (NamedPipeConnectionInfo, Enter-PSHostProcess가 쓰는 통로). WinRM을 쓰지 않고 이 PC 밖으로 나가지 않는다.
+# 탭에서 실행되는 것은 부트스트랩의 실제 부분(prelude, tab_binding, session_entry)이고, 시험이 바꾸는 것은
+# New-PSSession 자리(세션 만들기)와 별명 프롬프트 자리(서버 쪽 prompt)뿐이다.
+# 미리 친 줄은 $env:HQ_WHO 이름의 파일을 만든다. 탭에서는 client, 서버에서는 server이므로 어디서 실행됐는지 남는다.
+
+# 이름 있는 파이프 런스페이스를 PSSession으로 감싼다(공개 생성자가 없다). Enter-PSSession -Session이 받는 모양이다.
+_PIPE_SESSION = (
+    "$ci = New-Object System.Management.Automation.Runspaces.NamedPipeConnectionInfo([int]$env:HQ_SERVER_PID)\n"
+    "$rs = [runspacefactory]::CreateRunspace($ci, $Host, "
+    "[System.Management.Automation.Runspaces.TypeTable]::LoadDefaultTypeFiles())\n"
+    "$rs.Open()\n"
+    "$new = [System.Management.Automation.Runspaces.PSSession].GetConstructor("
+    "[Reflection.BindingFlags]'Instance, NonPublic', $null, [type[]]@($rs.GetType()), $null)\n"
+    "$global:__hq_session = $new.Invoke(@($rs))\n"
+)
+# 서버의 원격 prompt가 서버 프로세스를 끝낸다. 그래서 서버는 탭이 원격 프롬프트를 그리는 도중에 죽는다.
+# PowerShell이 다른 스레드에서 탭을 이 PC의 런스페이스로 되돌리는 순간이 매번 그 도중에 온다(spec 7.3).
+_DIES_IN_PROMPT = (
+    "Invoke-Command -Session $global:__hq_session { function global:prompt { Stop-Process -Id $PID -Force } }\n"
+)
+# 원격 프롬프트를 그릴 때마다 서버가 표시 파일을 남긴다. 시험은 이것으로 탭이 입력을 기다리는 중임을 안다.
+_REMOTE_PROMPT_FILE = "remote-prompt.txt"
+_MARKS_PROMPT = (
+    "Invoke-Command -Session $global:__hq_session { function global:prompt {"
+    f" New-Item -ItemType File -Force -Path (Join-Path $env:HQ_DIR '{_REMOTE_PROMPT_FILE}') | Out-Null; 'PS> ' }} }}\n"
+)
+TYPED_HERE_OR_THERE = 'New-Item -ItemType File -Path (Join-Path $env:HQ_DIR "ran-in-$env:HQ_WHO.txt") | Out-Null\r'
+# 고치기 전 부트스트랩의 들어가기(마지막 줄 하나). 대조군이 쓴다.
+_PLAIN_ENTRY = "Enter-PSSession -Session $global:__hq_session\n"
+
+
+def _wait_for_host_pipe(pid: int, timeout: float = 10.0) -> None:
+    """PowerShell 프로세스는 시작하면 \\\\.\\pipe\\PSHost.<시각>.<pid>.DefaultAppDomain.<이름>을 연다."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if any(f".{pid}.DefaultAppDomain." in name for name in os.listdir("\\\\.\\pipe\\")):
+            return
+        time.sleep(0.05)
+    raise TimeoutError(f"서버 역할 PowerShell({pid})의 파이프가 열리지 않았습니다")
+
+
+@pytest.fixture
+def local_server(tmp_path, monkeypatch):
+    """서버 역할을 하는 이 PC의 powershell.exe. 탭이 이 프로세스에 원격 세션을 연다."""
+    server = subprocess.Popen(
+        [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep 120"],
+        env={**os.environ, "HQ_WHO": "server", "HQ_DIR": str(tmp_path)},
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        _wait_for_host_pipe(server.pid)
+        monkeypatch.setenv("HQ_WHO", "client")
+        monkeypatch.setenv("HQ_DIR", str(tmp_path))
+        monkeypatch.setenv("HQ_SERVER_PID", str(server.pid))
+        yield server
+    finally:
+        server.kill()
+        server.wait()
+
+
+def _module_path_with_psreadline_2_0(module_path: str) -> str:
+    """2.0.0보다 높은 PSReadLine이 든 폴더를 뺀 모듈 경로. Windows에 든 2.0.0만 남는다."""
+    keep = []
+    for entry in module_path.split(";"):
+        folder = Path(entry) / "PSReadLine"
+        if folder.is_dir() and any(child.name != "2.0.0" for child in folder.iterdir()):
+            continue
+        keep.append(entry)
+    return ";".join(keep)
+
+
+@pytest.fixture(params=["installed", "2.0.0", "none"])
+def readline(request, monkeypatch, normal_shell) -> str:
+    """탭의 PSReadLine: 이 PC에 깔린 것, Windows에 든 2.0.0, 없음. 돌려주는 값은 탭이 실제로 불러와야 할 판이다."""
+    if request.param == "installed":
+        return normal_shell.psreadline
+    if request.param == "none":
+        return ""
+    monkeypatch.setenv("PSModulePath", _module_path_with_psreadline_2_0(normal_shell.module_path))
+    loaded = run_ps('Import-Module PSReadLine\nWrite-Output "$((Get-Module PSReadLine).Version)"\n').stdout.strip()
+    if loaded != "2.0.0":
+        pytest.skip("이 PC에 PSReadLine 2.0.0이 없다")
+    return "2.0.0"
+
+
+def _tab_into_local_server(readline: str, server_prompt: str, *, before: str = "", entry: str | None = None) -> str:
+    """부트스트랩과 같은 차례로 돈다: prelude(안전장치, 준비 신호), 세션, 별명 프롬프트 자리, Tab 설정, 들어가기."""
+    return (
+        # PSReadLine 없음: 모듈을 내린다. 그러면 콘솔 호스트가 자기 입력 읽기를 쓴다. Tab 설정은 PSReadLine 형이
+        # 남아 있어 모듈을 다시 불러오므로 건너뛴다(PSReadLine이 없는 PC에서 Tab 설정은 아무것도 하지 않는다).
+        ("Remove-Module PSReadLine\n" if readline == "" else "")
+        + prelude()
+        + "[IO.File]::WriteAllText((Join-Path $env:HQ_DIR 'psreadline.txt'), \"$((Get-Module PSReadLine).Version)\")\n"
+        + "$ErrorActionPreference = 'Stop'\n"
+        + before
+        + _PIPE_SESSION
+        + server_prompt
+        + (bootstrap.tab_binding() if readline else "")
+        + (bootstrap.session_entry() if entry is None else entry)
+    )
+
+
+def _loaded_readline(tmp_path) -> str:
+    return (tmp_path / "psreadline.txt").read_text(encoding="utf-8")
+
+
+def test_a_line_typed_ahead_never_runs_here_when_the_server_dies_while_the_prompt_is_drawn(
+    tmp_path, local_server, readline
+):
+    script = _tab_into_local_server(readline, _DIES_IN_PROMPT)
+    output, code = run_pty(encoded_argv(script), writes=[(0.2, TYPED_HERE_OR_THERE)], timeout=40)
+    assert _loaded_readline(tmp_path) == readline, output
+    assert not (tmp_path / "ran-in-client.txt").exists(), output
+    assert code == 20, output
+
+
+def test_even_without_the_watcher_powershell_can_no_longer_switch_back_from_another_thread(
+    tmp_path, local_server, readline
+):
+    # 들어가기의 두 장치 가운데 처리기 떼기만 본다. 감시를 거는 명령을 아무것도 하지 않는 같은 이름의 함수로 바꿔 둔다.
+    # 이 재현에서는 감시가 먼저 프로세스를 끝내 위 시험을 통과시킬 수 있다. 그래도 감시는 다른 스레드에서 돌기 때문에
+    # 언제나 이긴다고 할 수 없다. 처리기를 뗐으므로 미리 친 줄은 끊긴 원격 세션으로 가서 실패한다. 그 뒤 입력 루프가
+    # 내 PC로 돌아와 안전장치를 부른다.
+    script = _tab_into_local_server(readline, _DIES_IN_PROMPT, before="function Register-ObjectEvent { }\n")
+    output, code = run_pty(encoded_argv(script), writes=[(0.2, TYPED_HERE_OR_THERE)], timeout=40)
+    assert _loaded_readline(tmp_path) == readline, output
+    assert not (tmp_path / "ran-in-client.txt").exists(), output
+    assert code == 20, output
+
+
+def test_control_with_the_old_entry_the_line_typed_ahead_runs_here(tmp_path, local_server, readline):
+    # 대조군: 같은 서버, 같은 입력, 같은 순간에 서버가 죽는다. 들어가기를 고치기 전처럼 Enter-PSSession 한 줄로 하면
+    # 미리 친 줄이 이 PC에서 실행되고, 안전장치는 그 다음 프롬프트에서야 돈다. 그래서 위 시험의 "실행되지 않았다"는
+    # 경쟁이 일어나는 순간을 비켜 간 결과가 아니다.
+    script = _tab_into_local_server(readline, _DIES_IN_PROMPT, entry=_PLAIN_ENTRY)
+    output, code = run_pty(encoded_argv(script), writes=[(0.2, TYPED_HERE_OR_THERE)], timeout=40)
+    assert _loaded_readline(tmp_path) == readline, output
+    assert (tmp_path / "ran-in-client.txt").exists(), output
+    assert code == 20, output
+
+
+def test_lines_typed_before_and_during_the_disconnect_never_run_here(tmp_path, local_server, normal_shell):
+    # AC-8과 같은 모양: 서버를 0.7초 뒤에 끝내는 명령을 치고, 끊기기 전부터 끊긴 뒤까지 0.1초마다 한 줄씩 친다.
+    # 서버가 아직 살아 있을 때 읽힌 줄은 서버에서 실행돼도 된다. 탭에서는 하나도 실행되면 안 된다.
+    script = _tab_into_local_server(normal_shell.psreadline, _MARKS_PROMPT)
+    writes = [(1.5, "Start-Sleep -Milliseconds 700; Stop-Process -Id $PID -Force\r")]
+    writes += [(1.6 + 0.1 * k, TYPED_HERE_OR_THERE) for k in range(20)]
+    output, code = run_pty(encoded_argv(script), writes=writes, timeout=40)
+    assert (tmp_path / _REMOTE_PROMPT_FILE).exists(), output  # 원격 세션에 실제로 들어갔다
+    assert not (tmp_path / "ran-in-client.txt").exists(), output
+    assert code == 20, output
+
+
+def _kill_when_the_remote_prompt_is_drawn(server: subprocess.Popen, tmp_path) -> threading.Thread:
+    def run() -> None:
+        deadline = time.monotonic() + 30
+        while not (tmp_path / _REMOTE_PROMPT_FILE).exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.5)  # 탭이 프롬프트를 다 그리고 입력을 기다리기 시작할 때까지
+        server.kill()
+
+    killer = threading.Thread(target=run, daemon=True)
+    killer.start()
+    return killer
+
+
+def test_the_tab_ends_by_itself_when_the_server_dies_while_it_waits_for_input(tmp_path, local_server, readline):
+    # 아무것도 치지 않는다. 서버가 죽으면 다음 Enter를 기다리지 않고 탭이 20으로 끝나야 hq가 "연결 끊김"을 띄운다.
+    script = _tab_into_local_server(readline, _MARKS_PROMPT)
+    killer = _kill_when_the_remote_prompt_is_drawn(local_server, tmp_path)
+    output, code = run_pty(encoded_argv(script), timeout=20)
+    killer.join()
+    assert _loaded_readline(tmp_path) == readline, output
+    assert (tmp_path / _REMOTE_PROMPT_FILE).exists(), output  # 서버는 탭이 입력을 기다릴 때 죽었다
+    assert code == 20, output
+
+
+def test_typing_exit_still_ends_with_0(tmp_path, local_server, readline):
+    # 사용자가 스스로 나가면 안전장치가 세션을 지운다. 그때 생기는 상태 변화(Closing, Closed)를 끊김으로 세면 안 된다.
+    script = _tab_into_local_server(readline, _MARKS_PROMPT)
+    output, code = run_pty(encoded_argv(script), writes=[(0.2, "exit\r")], timeout=40)
+    assert _loaded_readline(tmp_path) == readline, output
+    assert (tmp_path / _REMOTE_PROMPT_FILE).exists(), output
+    assert local_server.poll() is None, output  # 서버는 살아 있다
+    assert code == 0, output
+
+
+def test_typing_exit_ends_with_0_even_when_removing_the_session_is_slow(tmp_path, local_server, normal_shell):
+    # WinRM 세션은 지우는 데 시간이 걸린다. 그동안 상태 변화(Closing, Closed) 이벤트가 처리되어도 감시는 이미
+    # 내려져 있어야 한다. 시험에서는 Remove-PSSession을 지운 뒤 0.5초 기다리는 같은 이름의 함수로 감싼다.
+    slow_remove = (
+        "function global:Remove-PSSession {"
+        " Microsoft.PowerShell.Core\\Remove-PSSession @args; Start-Sleep -Milliseconds 500 }\n"
+    )
+    script = _tab_into_local_server(normal_shell.psreadline, _MARKS_PROMPT, before=slow_remove)
+    output, code = run_pty(encoded_argv(script), writes=[(0.2, "exit\r")], timeout=40)
+    assert (tmp_path / _REMOTE_PROMPT_FILE).exists(), output
+    assert code == 0, output
+
+
+def test_when_the_entry_guard_cannot_be_armed_the_tab_ends_with_1_before_entering(tmp_path, local_server, normal_shell):
+    # 감시를 거는 명령을 실패하는 같은 이름의 함수로 바꿔 둔다(PowerShell은 cmdlet보다 함수를 먼저 찾는다).
+    # 안전장치를 다 걸지 못한 탭은 세션에 들어가지 않는다. 미리 친 줄은 어디에서도 실행되지 않는다.
+    script = _tab_into_local_server(
+        normal_shell.psreadline, _MARKS_PROMPT, before="function Register-ObjectEvent { throw 'hq-test-failure' }\n"
+    )
+    output, code = run_pty(encoded_argv(script), writes=[(0.2, TYPED_HERE_OR_THERE)], timeout=20)
+    assert code == 1, output
+    assert _printed_lines(output).count("끊김 안전장치를 걸지 못해 접속하지 않습니다: hq-test-failure") == 1, output
+    assert not (tmp_path / "ran-in-client.txt").exists(), output
+    assert not (tmp_path / "ran-in-server.txt").exists(), output
+    assert not (tmp_path / _REMOTE_PROMPT_FILE).exists(), output

@@ -31,6 +31,8 @@ def run_pty(argv: list[str], *, writes=(), timeout: float = 30.0) -> tuple[str, 
         start = time.monotonic()
         for delay, text in writes:
             time.sleep(max(0.0, start + delay - time.monotonic()))
+            if not proc.isalive():
+                break  # 끝난 탭에 친 키는 아무 데도 가지 않는다(hq도 끝난 탭의 입력을 잠근다)
             proc.write(text)
         while proc.isalive() and time.monotonic() - start < timeout:
             time.sleep(0.05)

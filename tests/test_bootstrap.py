@@ -228,7 +228,67 @@ def test_tab_binding_runs_locally_after_the_ready_signal_and_before_enter_pssess
     assert script.index("$ErrorActionPreference = 'Stop'") < script.index(block)
     assert script.index(block) < script.index(enter)
     assert [line for line in _code_lines(script) if "Enter-PSSession" in line] == [enter.strip()]
-    assert _code_lines(script)[-1] == enter.strip()
+    assert script.index(block) < script.index(bootstrap.session_entry())  # Enter-PSSession은 들어가기 부분에 있다
+
+
+# ---- 원격 세션 들어가기 (Task D-2, spec 7.3) ----
+
+
+def test_session_entry_is_the_last_region_of_the_template_and_holds_enter_pssession():
+    block = bootstrap.session_entry()
+    assert block.startswith(bootstrap.ENTRY_REGION_START + "\n"), block
+    assert block.rstrip().endswith(bootstrap.ENTRY_REGION_END), block
+    text = bootstrap.template_text()
+    assert text.count(block) == 1
+    assert text.rstrip().endswith(block.rstrip())
+    assert [line for line in _code_lines(text) if "Enter-PSSession" in line] == [
+        line for line in _code_lines(block) if "Enter-PSSession" in line
+    ]
+
+
+_WATCHER = "hq.session"
+
+
+def test_the_entry_arms_the_watcher_before_entering_and_takes_the_switch_back_away_after():
+    # 감시는 들어가기 전에 건다: 들어간 직후에 끊겨도 놓치지 않는다. PowerShell이 다른 스레드에서 이 PC의 셸로
+    # 되돌리는 처리기는 Enter-PSSession이 거므로, 떼는 것은 그 다음이다. 동작은 통합 시험이 실제로 확인한다.
+    code = "\n".join(_code_lines(bootstrap.session_entry()))
+    watch = code.index(f"-SourceIdentifier {_WATCHER}")
+    enter = code.index("Enter-PSSession -Session $global:__hq_session")
+    detach = code.index("$global:__hq_session.Runspace.remove_StateChanged(")
+    assert code.index("Register-ObjectEvent") < watch < enter < detach, code
+    assert code.index("'HandleRemoteRunspaceStateChanged'") < enter, code  # 뗄 처리기는 들어가기 전에 찾아 둔다
+
+
+def test_the_watcher_ends_the_tab_with_20_and_only_for_states_that_mean_the_session_ended():
+    code = "\n".join(_code_lines(bootstrap.session_entry()))
+    action = code[code.index("-Action {") : code.index("} catch {")]
+    assert "@('Closing', 'Closed', 'Broken', 'Disconnected')" in action, action  # PowerShell이 되돌리던 상태들
+    assert re.findall(r"\[Environment\]::Exit\((\d+)\)", action) == ["20"], action
+
+
+def test_a_guard_that_cannot_be_armed_ends_the_tab_with_1_before_entering():
+    code = "\n".join(_code_lines(bootstrap.session_entry()))
+    failed = code[code.index("} catch {") : code.index("Enter-PSSession")]
+    assert 'Write-Host "끊김 안전장치를 걸지 못해 접속하지 않습니다: $($_.Exception.Message)"' in failed, failed
+    assert "Remove-PSSession -Session $global:__hq_session" in failed, failed
+    assert re.findall(r"\[Environment\]::Exit\((\d+)\)", failed) == ["1"], failed  # 0(사용자가 나감)이나 20이 아니다
+
+
+def test_the_safety_net_stops_the_watcher_before_it_removes_the_session():
+    # 사용자가 나가면 안전장치가 세션을 지우고, 그러면 세션 상태가 Closing, Closed로 바뀐다. 감시가 그때까지 살아
+    # 있으면 그 변화를 끊김으로 보고 20으로 끝내 버린다. 그래서 종료 코드를 정한 다음, 지우기 전에 감시를 내린다.
+    text = prelude()
+    start = text.index("function global:prompt")
+    safety_net = text[start : text.index("\n}\n", start)]
+    stop = safety_net.index(f"Unregister-Event -SourceIdentifier {_WATCHER} -ErrorAction SilentlyContinue")
+    assert safety_net.index("$code = 20") < stop < safety_net.index("Remove-PSSession"), safety_net
+
+
+def test_the_entry_adds_nothing_the_antivirus_blocks():
+    code = "\n".join(_code_lines(bootstrap.session_entry()))
+    for word in ("FromBase64String", "Invoke-Command", "Add-Type", "Invoke-Expression", "iex "):
+        assert word not in code, word
 
 
 def test_tab_tries_the_suggestion_before_falling_back_to_tab_completion():
