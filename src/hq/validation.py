@@ -41,7 +41,7 @@ def validate_username(value: str) -> str:
         raise ValidationError("ID를 입력하세요.")
     prefix, sep, name = user.rpartition("\\")
     if sep and not _PREFIX.fullmatch(prefix):
-        raise ValidationError(f"ID 앞부분은 '.\\' 또는 '서버이름\\' 형식만 쓸 수 있습니다: {user}")
+        raise ValidationError(f"ID 앞부분은 '.\\', '서버이름\\', '도메인\\' 형식만 쓸 수 있습니다: {user}")
     if not _USER.fullmatch(name):
         raise ValidationError(f"ID에는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)만 쓸 수 있습니다(64자 이하): {user}")
     return user

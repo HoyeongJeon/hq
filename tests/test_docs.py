@@ -87,3 +87,14 @@ def test_spec_shows_how_to_write_a_domain_account():
     for field in ("| 접속 계정 |", "| username |"):
         row = next(line for line in lines if line.startswith(field))
         assert "도메인\\계정" in row and "CONTOSO\\opsadmin" in row, row
+
+
+def test_spec_says_domain_accounts_already_log_in_over_ntlm():
+    # 체크포인트 D: 도메인 계정은 '도메인\계정'으로 적으면 NTLM으로 로그인된다. Kerberos는 여전히 범위 밖이다
+    lines = SPEC.read_text(encoding="utf-8").splitlines()
+    d2_reason = next(line for line in lines if line.startswith("| D2 |")).split(" | ")[2]
+    kerberos = next(line for line in lines if line.startswith("- Kerberos:"))
+    for text in (d2_reason, kerberos):
+        assert "도메인\\계정" in text and "NTLM" in text, text
+    assert "서버 로컬 계정이라" not in d2_reason, d2_reason
+    assert "도메인 계정을 쓰게 되면" not in kerberos, kerberos

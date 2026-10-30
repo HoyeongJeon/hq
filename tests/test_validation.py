@@ -34,10 +34,20 @@ def test_invalid_hosts(value):
 
 
 @pytest.mark.parametrize(
-    "value", ["Administrator", "opsadmin", ".\\Administrator", "WEB01\\Administrator", "gw.admin-1_x"]
+    "value",
+    ["Administrator", "opsadmin", ".\\Administrator", "WEB01\\Administrator", "CONTOSO\\opsadmin", "gw.admin-1_x"],
 )
 def test_valid_usernames(value):
     assert validate_username(value) == value
+
+
+@pytest.mark.parametrize("value", ["\\admin", "a\\b\\c", "관리\\admin"])
+def test_a_bad_prefix_names_every_accepted_form(value):
+    # 도메인 계정도 '도메인\계정'으로 받는다(체크포인트 D). 오류 문구가 서버 이름만 말하면 도메인 계정을 못 쓰는 줄 안다
+    with pytest.raises(ValidationError) as error:
+        validate_username(value)
+    for form in ("'.\\'", "'서버이름\\'", "'도메인\\'"):
+        assert form in str(error.value), str(error.value)
 
 
 @pytest.mark.parametrize(
