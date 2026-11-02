@@ -10,7 +10,7 @@ import os
 from ctypes import wintypes
 from pathlib import Path
 
-from hq.validation import is_hex_id
+from hq.validation import ValidationError, is_hex_id
 
 
 class _Blob(ctypes.Structure):
@@ -68,12 +68,26 @@ class SecretStore:
 
     def save(self, server_id: str, password: str) -> None:
         if not password:
-            raise ValueError("비밀번호가 비어 있습니다.")
+            raise ValidationError("비밀번호가 비어 있습니다.")
+        try:
+            plaintext = password.encode("utf-16-le")
+        except UnicodeEncodeError:
+            plaintext = None  # 원래 예외는 비밀번호 전체를 쥐고 있어 잇지 않는다(아래에서 except 밖에서 던진다)
+        if plaintext is None:
+            raise ValidationError("비밀번호에 쓸 수 없는 깨진 글자가 들어 있습니다. 다시 입력하세요.")
         path = self.path_for(server_id)
         self._dir.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix(".tmp")
-        temp.write_text(protect(password.encode("utf-16-le")).hex(), encoding="ascii")
-        os.replace(temp, path)
+        try:
+            # 정전이 나도 비밀번호 파일이 옛 내용이나 새 내용 중 하나로 온전히 남게, 바꿔치기 전에 디스크에 내린다
+            with open(temp, "w", encoding="ascii") as file:
+                file.write(protect(plaintext).hex())
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temp, path)
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
 
     def has(self, server_id: str) -> bool:
         return self.path_for(server_id).is_file()
