@@ -1,4 +1,6 @@
 import socket
+import subprocess
+import sys
 import threading
 import time
 
@@ -73,6 +75,34 @@ def test_slow_name_lookups_do_not_hold_back_the_others(monkeypatch):
         server.close()
     assert elapsed < timeout + 0.5
     assert result == {**dict.fromkeys(slow, False), "fast-name": True, "127.0.0.1": True}
+
+
+_SLOW_LOOKUP_AT_EXIT = """
+import socket
+import threading
+
+from hq.probe import probe_all
+
+
+def getaddrinfo(*args, **kwargs):
+    threading.Event().wait(60)  # OS의 이름 풀이가 답하지 않는 것처럼
+    raise socket.gaierror("느린 이름")
+
+
+socket.getaddrinfo = getaddrinfo
+print(probe_all(["slow-name.invalid"], timeout=0.2))
+"""
+
+
+def test_a_slow_name_lookup_never_holds_the_process_at_exit():
+    # 끝내기 직전에 상태를 확인한 이름이 풀리지 않으면, 이름 풀이 스레드를 기다리느라 hq.exe가 끝나지 않고 남았다.
+    # 그동안 make-shortcut.ps1은 "HQ가 실행 중"이라며 설치를 거절한다(최종 검토 M-7)
+    started = time.monotonic()
+    result = subprocess.run([sys.executable, "-c", _SLOW_LOOKUP_AT_EXIT], capture_output=True, text=True, timeout=15)
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "{'slow-name.invalid': False}"
+    assert elapsed < 10
 
 
 def test_name_whose_first_address_does_not_answer_tries_the_next():
