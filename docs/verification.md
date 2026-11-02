@@ -14,7 +14,7 @@
 | V5 | 통과 | `ipconfig`와 `Get-Service \| Select-Object -First 5`의 한글이 세션 콘솔 창에서 바르게 보였다(사용자 확인). hq 탭(ConPTY·xterm)에서도 한글 출력이 바르게 보였다(체크포인트 B, 2026-10-19, 사용자 확인). 설치한 exe의 탭에서도 한글 출력이 바르게 보였다(체크포인트 C, 2026-10-19, 사용자 확인) | 없음 |
 | V6 | 통과 | `[성공] Administrator`, `[성공] .\Administrator`, `[성공] SRV-B\Administrator`. 접두 없는 `Administrator`로 연 세션의 `whoami`: `srv-b\administrator`(도메인 계정이 아니라 로컬 계정) | Task 8(엑셀 설명), Task 15(입력 안내)에서 반영 |
 | V7 | 통과 | `exit` → `[1회차] ... 종료 코드 0 → USER_EXIT` / `Stop-Process -Id $PID -Force` → 창이 저절로 닫힘, `[2회차] ... 종료 코드 20 → DISCONNECTED` | 없음. 서버에서 WinRM을 다시 시작해 끊는 경우는 체크포인트 B에서 확인(2026-10-19, 사용자: 문제없음) |
-| V8 | 통과 | 설치한 exe(`%LOCALAPPDATA%\Programs\hq\hq.exe`)가 콘솔 창 없이 떴고 AhnLab V3가 막거나 지우지 않았다(체크포인트 C, 2026-10-19, 사용자 확인) | 없음 |
+| V8 | 통과 | 설치한 exe(`%LOCALAPPDATA%\Programs\hq\hq.exe`)가 콘솔 창 없이 떴고 AhnLab V3가 막거나 지우지 않았다(체크포인트 C, 2026-10-19, 사용자 확인). AC-8 수정(콘솔 호스트 내부를 리플렉션으로 다룸)을 넣고 다시 빌드한 exe도 V3가 막지 않았고 탭이 정상으로 열렸다(2026-11-02, 사용자 확인) | 없음 |
 | V9 | 통과 | 개발 실행(`uv run python -m hq`)에서 한글 IME 입력과 `dir C:\Windows\System32` 출력이 문제없었다(체크포인트 B, 2026-10-19, 사용자 확인). exe 탭에서 한글 IME 입력과 `dir C:\Windows\System32` 출력이 문제없었다(체크포인트 C, 2026-10-19, 사용자 확인) | 없음 |
 
 ## 참고
