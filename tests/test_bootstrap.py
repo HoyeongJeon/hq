@@ -222,7 +222,7 @@ def test_tab_binding_runs_locally_after_the_ready_signal_and_before_enter_pssess
     # PSReadLine은 Enter-PSSession 안에서도 이 PC의 셸에서 돈다. 그래서 키는 원격 세션에 들어가기 전에 여기서 건다.
     script = build_script(PARAMS)
     block = bootstrap.tab_binding()
-    enter = "\nEnter-PSSession -Session $global:__hq_session\n"
+    enter = "Enter-PSSession -Session $global:__hq_session\n"  # 들어가기 부분의 try 안에 들여 쓴 한 줄
     assert script.count(block) == 1
     assert script.index(bootstrap.MAIN_MARKER) < script.index(block)  # 준비 신호 뒤(안전장치 바로 다음 줄은 그대로)
     assert script.index("$ErrorActionPreference = 'Stop'") < script.index(block)
@@ -258,6 +258,20 @@ def test_the_entry_arms_the_watcher_before_entering_and_takes_the_switch_back_aw
     detach = code.index("$global:__hq_session.Runspace.remove_StateChanged(")
     assert code.index("Register-ObjectEvent") < watch < enter < detach, code
     assert code.index("'HandleRemoteRunspaceStateChanged'") < enter, code  # 뗄 처리기는 들어가기 전에 찾아 둔다
+
+
+def test_the_switch_back_is_taken_away_even_when_the_entry_is_stopped_right_after_entering():
+    # Ctrl+C(파이프라인 멈춤)가 Enter-PSSession이 런스페이스를 바꾼 직후, 처리기를 떼기 전에 오면 그 탭은 처리기가
+    # 붙은 채로 남아 D-2의 경쟁이 되살아난다(최종 검토 M-1). PowerShell은 멈출 때도 finally를 돌린다.
+    # 동작은 통합 시험(test_a_stop_right_after_entering_still_takes_the_switch_back_away)이 실제로 확인한다.
+    code = "\n".join(_code_lines(bootstrap.session_entry()))
+    assert code.endswith(
+        "try {\n"
+        "Enter-PSSession -Session $global:__hq_session\n"
+        "} finally {\n"
+        "$global:__hq_session.Runspace.remove_StateChanged($switchBack)\n"
+        "}"
+    ), code
 
 
 def test_the_watcher_ends_the_tab_with_20_and_only_for_states_that_mean_the_session_ended():

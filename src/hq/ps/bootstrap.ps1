@@ -141,6 +141,11 @@ try {
     Write-Host "끊김 안전장치를 걸지 못해 접속하지 않습니다: $($_.Exception.Message)"
     try { Remove-PSSession -Session $global:__hq_session -ErrorAction SilentlyContinue } finally { [Environment]::Exit(1) }
 }
-Enter-PSSession -Session $global:__hq_session
-$global:__hq_session.Runspace.remove_StateChanged($switchBack)
+# 떼기는 finally에 둔다. Enter-PSSession이 런스페이스를 바꾼 직후 Ctrl+C로 이 파이프라인이 멈춰도 PowerShell은 finally를
+# 돌리므로, 처리기가 붙은 채 남지 않는다.
+try {
+    Enter-PSSession -Session $global:__hq_session
+} finally {
+    $global:__hq_session.Runspace.remove_StateChanged($switchBack)
+}
 #endregion enter

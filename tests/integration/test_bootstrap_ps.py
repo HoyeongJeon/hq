@@ -574,6 +574,25 @@ def test_control_with_the_old_entry_the_line_typed_ahead_runs_here(tmp_path, loc
     assert code == 20, output
 
 
+def test_a_stop_right_after_entering_still_takes_the_switch_back_away(tmp_path, local_server, readline):
+    # Ctrl+C가 Enter-PSSession이 런스페이스를 바꾼 바로 뒤, 처리기를 떼는 줄 전에 오면 들어가기 파이프라인이 멈춘다
+    # (최종 검토 M-1). 그 틈을 매번 만들려고 Enter-PSSession을 진짜를 부른 다음 멈추는 같은 이름의 함수로 바꾼다
+    # (PowerShell은 cmdlet보다 함수를 먼저 찾는다). 처리기 떼기만 보려고 감시는 위 시험처럼 끈다(감시가 먼저 끝내면
+    # 처리기가 붙어 있어도 통과할 수 있다). 멈춰도 처리기는 떼어져, 미리 친 줄은 끊긴 원격 세션으로 가서 실패한다.
+    # 처리기가 붙은 채면 대조군처럼 그 줄이 이 PC에서 실행된다(고치기 전에 이 시험이 그렇게 실패했다).
+    stops_after_entering = (
+        "function Register-ObjectEvent { }\n"
+        "function Enter-PSSession { Microsoft.PowerShell.Core\\Enter-PSSession @args; throw ('hq-test' + '-stop') }\n"
+    )
+    script = _tab_into_local_server(readline, _DIES_IN_PROMPT, before=stops_after_entering)
+    output, code = run_pty(encoded_argv(script), writes=[(0.2, TYPED_HERE_OR_THERE)], timeout=40)
+    assert _loaded_readline(tmp_path) == readline, output
+    assert "hq-test-stop" in output, output  # 들어간 뒤에 멈췄다
+    assert not (tmp_path / "ran-in-client.txt").exists(), output
+    assert "'Broken'" in output, output
+    assert code == 20, output
+
+
 def test_lines_typed_before_and_during_the_disconnect_never_run_here(tmp_path, local_server, normal_shell):
     # AC-8과 같은 모양: 서버를 0.7초 뒤에 끝내는 명령을 치고, 끊기기 전부터 끊긴 뒤까지 0.1초마다 한 줄씩 친다.
     # 서버가 아직 살아 있을 때 읽힌 줄은 서버에서 실행돼도 된다. 탭에서는 하나도 실행되면 안 된다.
