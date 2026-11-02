@@ -1,7 +1,9 @@
 """PowerShell 명령에 들어가는 값의 형식 검사.
 
-host와 username은 접속 스크립트와 TrustedHosts 스크립트에 들어가므로, 따옴표·$·공백 같은
-문자가 아예 들어오지 못하게 허용 문자만 받는다(값 자체는 Base64로도 감싸서 넘긴다).
+host와 username은 접속 스크립트, TrustedHosts 스크립트, 서버 설정 스크립트에 들어가므로, 따옴표·$·공백 같은
+문자가 아예 들어오지 못하게 허용 문자만 받는다. 접속·TrustedHosts 스크립트에는 bootstrap.ps_json_literal(ASCII만 쓴
+JSON 작은따옴표 문자열)로 넣고, 서버 설정 스크립트에는 작은따옴표 문자열로 그대로 넣는다. 값을 Base64로 감싸지 않는다
+(백신이 FromBase64String이 든 명령의 실행을 막는다). 서버 설정 스크립트에서는 이 검사가 유일한 겹이다.
 """
 
 import ipaddress

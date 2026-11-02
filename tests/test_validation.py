@@ -92,3 +92,14 @@ def test_is_hex_id_accepts_32_lowercase_hex():
 )
 def test_is_hex_id_rejects_everything_else(value):
     assert not is_hex_id(value)
+
+
+def test_the_module_says_how_values_really_reach_powershell():
+    # 값은 Base64로 감싸지 않는다(백신이 FromBase64String이 든 명령을 막는다, test_no_launched_script_decodes_base64).
+    # 문서가 옛 방식을 말하면 허용 문자 검사를 덜 중요하게 여기게 된다(최종 검토 M-9)
+    from hq import validation
+
+    doc = validation.__doc__
+    assert "Base64로도 감싸서" not in doc
+    assert "ps_json_literal" in doc
+    assert "Base64로 감싸지 않는다" in doc
