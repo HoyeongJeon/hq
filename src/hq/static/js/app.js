@@ -22,6 +22,7 @@
   const state = { servers: [], status: {}, query: '', selected: null, view: 'servers', tabs: [], active: null };
   let api = null;
   let closeCurrentModal = null;
+  const dialogWaiters = []; // whenNoDialog가 기다리는 중. 마지막 창이 닫히면 깨운다
 
   // ---------- 도우미 ----------
   function h(tag, props, ...children) {
@@ -65,6 +66,7 @@
     return new Promise((resolve) => {
       const overlay = $('#modal');
       let primary = null;
+      let running = null; // 버튼 동작(run)이 끝나기를 기다리는 중이면 그 약속
       // 한 번만, 그리고 지금 떠 있는 창일 때만 닫는다. 버튼 동작(run)을 기다리는 사이에 다른 창으로 바뀌었으면, 끝난
       // 동작의 close는 아무것도 하지 않는다(새 창을 숨기거나 새 창의 키 처리기를 남기지 않는다). 닫았으면 true
       function close(value, replaced = false) {
@@ -78,7 +80,12 @@
           const tab = tabById(state.active);
           if (tab) focusTerminal(tab); // 마지막 창이 닫혔다. 포커스를 지금 탭의 터미널로 돌려준다
         }
-        resolve(value);
+        // 동작이 끝나기 전에 닫혔으면(다른 창으로 바뀜, Esc) undefined 대신 그 동작의 결과를 돌려준다. hq는 이미 일을
+        // 했을 수 있다(예: 엑셀 등록). false(창에 남아 오류를 보이려던 결과)는 창이 없으니 undefined로 바꾼다
+        resolve(running ? running.then((result) => (result === false ? undefined : result), () => undefined) : value);
+        if (!replaced) {
+          for (const wake of dialogWaiters.splice(0)) wake(); // 닫힌 창을 기다리던 쪽이 먼저 이어 가도록 resolve 뒤에 깨운다
+        }
         return true;
       }
       function onKey(event) {
@@ -112,8 +119,10 @@
           if (b.run) {
             button.disabled = true;
             try {
-              value = await b.run();
+              running = Promise.resolve(b.run());
+              value = await running;
             } finally {
+              running = null;
               button.disabled = false;
             }
             if (value === false) return;
@@ -132,6 +141,12 @@
       const focusTarget = overlay.querySelector('input:not([type=checkbox]), textarea') || primary;
       if (focusTarget) focusTarget.focus();
     });
+  }
+
+  // 떠 있는 대화 상자가 없을 때까지 기다린다. 알림을 띄우려고 다른 창(예: 탭의 비밀번호 창)을 밀어내면 그 창의 결과가
+  // 사라지므로, 창이 모두 닫힌 뒤에 띄울 때 쓴다
+  async function whenNoDialog() {
+    while (closeCurrentModal) await new Promise((resolve) => dialogWaiters.push(resolve));
   }
 
   function confirmDialog({ title, message, ok, danger }) {
@@ -204,6 +219,11 @@
     }
     renderServers();
     for (const tab of state.tabs) renderTabInfo(tab);
+    // 열린 정보 칸도 새 값으로 다시 그린다(비밀번호 저장, 엑셀 등록 뒤). 그 서버가 목록에서 사라졌으면 닫는다
+    if (!$('#info').hidden) {
+      if (serverById(state.selected)) showInfo(state.selected);
+      else closeInfo();
+    }
   }
 
   async function refreshStatus() {
@@ -445,18 +465,24 @@
       h('p', { class: 'msg', text: `신규 ${counts.new} · 이미 등록됨 ${counts.existing} · 오류 ${counts.error} (오류 행은 등록하지 않습니다)` }),
       h('div', { class: 'grid-wrap' }, table),
       h('label', { class: 'check', for: 'x-overwrite' }, overwrite, h('span', { text: '이미 등록된 서버는 이 파일의 값으로 덮어쓰기 (비밀번호 포함)' })));
+    // 등록하는 사이에 미리보기가 다른 창으로 바뀌어도(탭의 실패 안내, X의 확인) openModal은 등록 결과를 돌려준다.
+    // 그 결과로 목록을 다시 읽고, 안내(spec 5.4의 평문 경고 포함)는 지금 떠 있는 창이 닫힌 뒤에 띄운다
     const result = await openModal({
       title: '엑셀 등록 미리보기', wide: true, body,
-      buttons: [{ label: '취소' }, { label: '등록', primary: true, run: () => api.apply_excel(preview.preview_id, overwrite.checked) }],
+      buttons: [{ label: '취소' }, {
+        label: '등록', primary: true, run: () => L.callHq(() => api.apply_excel(preview.preview_id, overwrite.checked)),
+      }],
     });
     if (!result) return;
     if (!result.ok) {
+      await whenNoDialog();
       messageDialog('등록하지 못했습니다', result.error);
       return;
     }
     await loadServers();
     refreshStatus();
     refreshTrust();
+    await whenNoDialog();
     messageDialog('등록했습니다', `추가 ${result.added} · 덮어씀 ${result.updated} · 건너뜀 ${result.skipped} · 오류 ${result.errors}`
       + '\n\n엑셀 파일에 비밀번호가 평문으로 들어 있습니다. 지금 지우세요.');
   }
