@@ -44,6 +44,32 @@ def test_output_is_forwarded_in_order_and_size_is_passed():
     assert out == [(SID, "a"), (SID, "b")]
 
 
+@pytest.mark.parametrize("failing", ["hq-read-", "hq-watch-"])
+def test_a_session_whose_threads_cannot_start_is_dropped_and_its_process_ended(monkeypatch, failing):
+    # 스레드를 띄우지 못하면(RuntimeError: can't start new thread) 세션을 장부에 남기지 않고 프로세스도 끝낸다.
+    # 남기면 아무도 그 PowerShell과 서버 세션을 닫지 않는다(I-2, AC-7)
+    spawn = FakeSpawner()
+    manager, _, exits = make(spawn)
+    real_start = threading.Thread.start
+
+    def start(thread):
+        if thread.name.startswith(failing):
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(RuntimeError):
+        manager.open(SID, "s1", ["ps"], 80, 24)
+    monkeypatch.undo()
+    pty = spawn.ptys[0]
+    assert manager.open_count() == 0
+    assert pty.terminated and pty.closed
+    manager.open(SID, "s1", ["ps"], 80, 24)  # 같은 id로 다시 열 수 있다
+    assert manager.open_count() == 1
+    time.sleep(0.05)
+    assert exits == []  # 버린 세션의 끝남은 보고하지 않는다
+
+
 def test_exit_code_is_reported_once_and_the_tab_stays_open():
     spawn = FakeSpawner()
     manager, _, exits = make(spawn)

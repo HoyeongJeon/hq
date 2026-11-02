@@ -283,7 +283,23 @@ class SessionManager:
         session = _Session(session_id, server_id, pty, (rows, cols), gate=gate)
         with self._lock:
             self._sessions[session_id] = session
-        self._start(session, 0, pty, started)
+        try:
+            self._start(session, 0, pty, started)
+        except BaseException:
+            # 스레드를 띄우지 못했다(예: RuntimeError). 장부에 남기면 아무도 이 프로세스와 그 서버 세션을 닫지 않는다
+            with self._lock:
+                self._sessions.pop(session_id, None)
+                session.closing = True
+            self._end_now(session_id, pty)
+            raise
+
+    def _end_now(self, session_id: str, pty: PtyLike) -> None:
+        """방금 띄운 프로세스를 강제로 끝내고 PTY를 놓는다. 아직 서버에 접속하기 전이라 exit을 치지 않는다."""
+        try:
+            pty.terminate(force=True)
+        except Exception:
+            log.warning("프로세스를 끝내지 못함 %s", session_id[:8], exc_info=True)
+        self._release(session_id, pty)
 
     def reconnect(self, session_id: str, argv: list[str], cols: int, rows: int) -> None:
         with self._lock:

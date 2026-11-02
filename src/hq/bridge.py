@@ -8,8 +8,13 @@ pywebview는 화면이 부른 함수마다 스레드를 따로 띄우므로 메�
 
 창의 수명에 관한 함수(start_pump, close_requested, close_all_sessions, shutdown)는 화면에 내놓지 않으려고 메서드가
 아니라 모듈 함수로 둔다.
+
+화면에 내놓는 메서드는 모두 @_screen_call로 감싼다. 화면은 거부된 약속(예외)을 처리하지 않으므로, 예상하지 못한 예외도
+기록한 뒤 {ok: false, error: 한국어}로 돌려준다. 서버 목록을 바꾸는 메서드는 저장이 실패하면 메모리를 파일과 같게
+되돌린다(다음의 다른 저장이 실패한 변경을 몰래 쓰지 않게).
 """
 
+import functools
 import json
 import logging
 import threading
@@ -35,6 +40,7 @@ PUMP_INTERVAL = 0.016
 SETTLE_TIMEOUT = 10.0  # shutdown이 다른 스레드의 닫기를 기다리는 최대 시간. 닫기 하나는 close_timeout(2초) 안팎이다
 TEMPLATE_NAME = "hq-서버목록-양식.xlsx"
 _PREVIEW_FIELDS = ("name", "nickname", "host", "group", "username")  # 비밀번호와 메모는 미리보기로 보내지 않는다
+_SEE_LOG = r"자세한 내용은 hq 로그(%LOCALAPPDATA%\hq\logs)에 남겼습니다."
 
 
 class Dialogs(Protocol):
@@ -54,6 +60,28 @@ class _Tab:
 
 def _fail(message: str, **extra: Any) -> dict[str, Any]:
     return {"ok": False, "error": message, **extra}
+
+
+def _save_failed(exc: Exception) -> dict[str, Any]:
+    """저장하다 난 예외의 안내. except 블록 안에서 부른다. Windows의 OSError와 hq의 오류는 한국어라 내용을 붙인다."""
+    log.warning("저장하지 못함", exc_info=True)
+    if isinstance(exc, (OSError, InventoryError, ValidationError)):
+        return _fail(f"저장하지 못했습니다: {exc}")
+    return _fail(f"저장하지 못했습니다. {_SEE_LOG}")
+
+
+def _screen_call(method: Callable[..., Any]) -> Callable[..., Any]:
+    """화면이 부르는 메서드. 예상하지 못한 예외도 기록하고 {ok: false, error}로 돌려준다(화면에 예외를 넘기지 않음)."""
+
+    @functools.wraps(method)
+    def call(self: "Bridge", *args: Any, **kwargs: Any) -> Any:
+        try:
+            return method(self, *args, **kwargs)
+        except Exception:
+            log.warning("화면 요청 %s를 처리하지 못함", method.__name__, exc_info=True)
+            return _fail(f"hq가 요청을 처리하지 못했습니다. {_SEE_LOG}")
+
+    return call
 
 
 def _size(value: Any, default: int) -> int:
@@ -103,11 +131,13 @@ class Bridge:
         self._quitting = False
 
     # ---------- 서버 목록 ----------
+    @_screen_call
     def list_servers(self) -> dict[str, Any]:
         if blocked := self._blocked():
             return blocked
         return {"ok": True, "servers": [self._public(s) for s in self._inventory.servers]}
 
+    @_screen_call
     def add_server(self, info: dict[str, Any], password: str) -> dict[str, Any]:
         if blocked := self._blocked():
             return blocked
@@ -120,56 +150,58 @@ class Bridge:
         try:
             self._secrets.save(server.id, password)
             self._inventory.save()
-        except (OSError, InventoryError) as exc:
-            self._inventory.remove(server.id)
-            self._secrets.delete(server.id)
-            return _fail(f"저장하지 못했습니다: {exc}")
+        except Exception as exc:
+            self._inventory.remove(server.id)  # 저장하지 못한 서버를 메모리에 남기지 않는다
+            self._delete_secret(server.id)
+            return _save_failed(exc)
         log.info("서버 추가 %s %s", server.id, server.host)
         return {"ok": True, "server": self._public(server)}
 
+    @_screen_call
     def update_server(self, server_id: str, info: dict[str, Any]) -> dict[str, Any]:
         if blocked := self._blocked():
             return blocked
         try:
             server = self._inventory.update(server_id, info)
-            self._inventory.save()
         except KeyError:
             return _fail("목록에 없는 서버입니다.")
         except ValidationError as exc:
             return _fail(str(exc))
-        except (OSError, InventoryError) as exc:
-            return _fail(f"저장하지 못했습니다: {exc}")
+        if failed := self._save_or_reload():
+            return failed
         return {"ok": True, "server": self._public(server)}
 
+    @_screen_call
     def set_password(self, server_id: str, password: str) -> dict[str, Any]:
         if not isinstance(password, str) or not password:
             return _fail("비밀번호를 입력하세요.")
         try:
             self._inventory.get(server_id)
-            self._secrets.save(server_id, password)
         except KeyError:
             return _fail("목록에 없는 서버입니다.")
-        except (OSError, ValueError) as exc:
-            return _fail(f"저장하지 못했습니다: {exc}")
+        try:
+            self._secrets.save(server_id, password)
+        except Exception as exc:
+            return _save_failed(exc)
         return {"ok": True}
 
+    @_screen_call
     def delete_server(self, server_id: str) -> dict[str, Any]:
         if blocked := self._blocked():
             return blocked
         try:
-            self._inventory.get(server_id)
+            self._inventory.remove(server_id)
         except KeyError:
             return _fail("목록에 없는 서버입니다.")
+        # 지운 목록을 저장한 뒤에야 탭과 비밀번호를 지운다. 저장하지 못했으면 화면의 탭과 서버가 그대로 남기 때문이다
+        if failed := self._save_or_reload():
+            return failed
         closed = self._close_tabs(lambda _sid, tab: tab.server_id == server_id)
-        self._inventory.remove(server_id)
-        self._secrets.delete(server_id)
-        try:
-            self._inventory.save()
-        except (OSError, InventoryError) as exc:
-            return _fail(f"저장하지 못했습니다: {exc}")
+        self._delete_secret(server_id)
         log.info("서버 삭제 %s", server_id)
         return {"ok": True, "closed_sessions": closed}
 
+    @_screen_call
     def probe(self) -> dict[str, Any]:
         servers = self._inventory.servers
         result = self._probe_hosts([s.host for s in servers])
@@ -178,6 +210,7 @@ class Bridge:
         return {"ok": True, "status": {s.id: bool(result.get(s.host, False)) for s in servers}}
 
     # ---------- 엑셀 ----------
+    @_screen_call
     def save_excel_template(self) -> dict[str, Any]:
         path = self._dialogs.save_xlsx(TEMPLATE_NAME)
         if not path:
@@ -188,6 +221,7 @@ class Bridge:
             return _fail(f"저장하지 못했습니다(파일이 열려 있으면 닫으세요): {exc}")
         return {"ok": True, "path": path}
 
+    @_screen_call
     def preview_excel(self) -> dict[str, Any]:
         if blocked := self._blocked():
             return blocked
@@ -207,6 +241,7 @@ class Bridge:
             rows.append({"row": row.row, "status": row.status, "error": row.error, **shown})
         return {"ok": True, "preview_id": preview.id, "rows": rows, "counts": counts}
 
+    @_screen_call
     def apply_excel(self, preview_id: str, overwrite: bool) -> dict[str, Any]:
         if blocked := self._blocked():
             return blocked
@@ -226,6 +261,7 @@ class Bridge:
         return _fail(message)
 
     # ---------- 초기 설정 ----------
+    @_screen_call
     def missing_trusted_hosts(self) -> dict[str, Any]:
         entries = self._read_trusted()
         if entries is None:
@@ -233,6 +269,7 @@ class Bridge:
         hosts = [s.host for s in self._inventory.servers]
         return {"ok": True, "readable": True, "missing": missing_hosts(hosts, entries)}
 
+    @_screen_call
     def add_trusted_hosts(self) -> dict[str, Any]:
         hosts = [s.host for s in self._inventory.servers]
         entries = self._read_trusted()
@@ -247,6 +284,7 @@ class Bridge:
             "다시 시도하세요. 그래도 안 되면 관리자 권한 PowerShell에서 직접 설정하세요."
         )
 
+    @_screen_call
     def server_setup_script(self, server_id: str, restrict: bool) -> dict[str, Any]:
         try:
             server = self._inventory.get(server_id)
@@ -260,22 +298,26 @@ class Bridge:
         except ValidationError as exc:
             return _fail(str(exc))
 
+    @_screen_call
     def get_settings(self) -> dict[str, Any]:
         return {"ok": True, "admin_ips": self._inventory.admin_ips}
 
+    @_screen_call
     def save_settings(self, admin_ips: list[str]) -> dict[str, Any]:
         if blocked := self._blocked():
             return blocked
+        if not isinstance(admin_ips, list) or not all(isinstance(ip, str) for ip in admin_ips):
+            return _fail("관리자 PC IP 목록의 형식이 잘못되었습니다.")
         try:
-            self._inventory.set_admin_ips([str(ip) for ip in admin_ips or []])
-            self._inventory.save()
+            self._inventory.set_admin_ips(admin_ips)
         except ValidationError as exc:
             return _fail(str(exc))
-        except (OSError, InventoryError) as exc:
-            return _fail(f"저장하지 못했습니다: {exc}")
+        if failed := self._save_or_reload():
+            return failed
         return {"ok": True, "admin_ips": self._inventory.admin_ips}
 
     # ---------- 세션 ----------
+    @_screen_call
     def open_session(self, session_id: str, server_id: str, cols: int, rows: int) -> dict[str, Any]:
         if not is_hex_id(session_id):
             return _fail("잘못된 세션 id입니다.")
@@ -291,22 +333,32 @@ class Bridge:
             if session_id in self._tabs:
                 return _fail("이미 열린 탭입니다.")
             self._tabs[session_id] = tab
-        result = self._precheck(server) or self._start(session_id, tab, server, cols, rows)
-        with self._lock:
-            tab.opening = False
-            closed = tab.closed
-            if closed or not result["ok"]:
-                del self._tabs[session_id]  # 자리를 맡은 동안에는 누구도 지우지 않는다(_close_tabs 참고)
-                self._closing += closed  # 아래에서 닫는다. 목록에서 빠져도 shutdown이 기다리게 같은 잠금 안에서 센다
-        if closed:
+        result = _fail(f"탭을 열지 못했습니다. {_SEE_LOG}")
+        broke = False  # 예상하지 못한 예외로 멈췄다. 띄운 뒤에 멈췄을 수 있으니 아래에서 그 세션도 닫는다
+        try:
+            result = self._precheck(server) or self._start(session_id, tab, server, cols, rows)
+        except Exception:
+            log.warning("탭을 열지 못함 %s 서버 %s %s", session_id[:8], server.id, server.host, exc_info=True)
+            broke = True
+        finally:
+            # 어떻게 끝났든 자리를 비운다. 여는 중 표시가 남으면 닫을 수 없는 탭이 되어 shutdown이 기다리기만 한다
+            with self._lock:
+                tab.opening = False
+                closed = tab.closed
+                if closed or broke or not result["ok"]:
+                    del self._tabs[session_id]  # 자리를 맡은 동안에는 누구도 지우지 않는다(_close_tabs 참고)
+                    # 아래에서 닫는다. 목록에서 빠져도 shutdown이 기다리게 같은 잠금 안에서 센다
+                    self._closing += closed or broke
+        if closed or broke:
             try:
-                self._sessions.close(session_id)  # 띄우는 사이에 닫혔다. 띄우지 않았으면 아무 일도 없다
+                self._sessions.close(session_id)  # 띄우는 사이에 닫혔다(또는 멈췄다). 띄우지 않았으면 아무 일도 없다
                 self._batcher.discard(session_id)
             finally:
                 self._close_done()
-            return {"ok": False, "cancelled": True}
+            return {"ok": False, "cancelled": True} if closed else result
         return result
 
+    @_screen_call
     def reconnect(self, session_id: str, cols: int, rows: int) -> dict[str, Any]:
         session_id = str(session_id)
         with self._lock:
@@ -330,19 +382,23 @@ class Bridge:
         log.info("다시 연결 %s 서버 %s %s", session_id[:8], server.id, server.host)
         return {"ok": True}
 
+    @_screen_call
     def send_input(self, session_id: str, data: str) -> None:
         # 받은 입력 하나를 쓰기 하나로 넘긴다. 묶으면 터미널 응답과 키가 섞여 준비 신호 전에 쥐고 있게 된다
         if isinstance(data, str):
             self._sessions.write(str(session_id), data)
 
+    @_screen_call
     def resize(self, session_id: str, cols: int, rows: int) -> None:
         self._sessions.resize(str(session_id), _size(cols, 80), _size(rows, 24))
 
+    @_screen_call
     def close_session(self, session_id: str) -> dict[str, Any]:
         session_id = str(session_id)
         self._close_tabs(lambda sid, _tab: sid == session_id)
         return {"ok": True}
 
+    @_screen_call
     def quit(self) -> None:
         self._quitting = True
         try:
@@ -371,16 +427,33 @@ class Bridge:
         """멈춘 엑셀 등록이 남긴 것을 버린다. 서버 목록을 파일에서 다시 읽고, 이번에 새로 만든 서버의 비밀번호 파일을
         지운다. 덮어쓴 서버의 비밀번호 파일은 되돌릴 수 없다(hq는 비밀번호를 풀지 않는다)."""
         added = {s.id for s in self._inventory.servers} - before
+        self._reload()
+        for server_id in added - {s.id for s in self._inventory.servers}:
+            self._delete_secret(server_id)
+
+    def _reload(self) -> None:
+        """서버 목록을 파일에서 다시 읽어 메모리를 파일과 같게 한다. 읽지 못하면 목록을 막는다(_blocked)."""
         try:
             self._inventory.load()
         except InventoryError as exc:
             self._load_error = str(exc)
             log.warning("서버 목록을 다시 읽지 못함", exc_info=True)
-        for server_id in added - {s.id for s in self._inventory.servers}:
-            try:
-                self._secrets.delete(server_id)
-            except OSError:
-                log.warning("비밀번호 파일을 지우지 못함 %s", server_id, exc_info=True)
+
+    def _save_or_reload(self) -> dict[str, Any] | None:
+        """서버 목록을 저장한다. 실패하면 메모리의 바뀐 것을 버리고(파일에서 다시 읽고) 그 안내를 돌려준다."""
+        try:
+            self._inventory.save()
+        except Exception as exc:
+            failed = _save_failed(exc)
+            self._reload()
+            return failed
+        return None
+
+    def _delete_secret(self, server_id: str) -> None:
+        try:
+            self._secrets.delete(server_id)
+        except OSError:
+            log.warning("비밀번호 파일을 지우지 못함 %s", server_id, exc_info=True)
 
     def _command_for(self, server: Server) -> list[str]:
         params = BootstrapParams(
@@ -566,3 +639,7 @@ def shutdown(bridge: Bridge) -> None:
     bridge._stop.set()
     close_all_sessions(bridge)
     bridge._wait_until_settled()
+    # 마지막 그물: 탭 목록에 없는데 아직 열린 세션. 있으면 장부 잘못이므로 알리고 닫는다(서버 세션을 남기지 않는다)
+    if left := bridge._sessions.open_count():
+        log.warning("탭 목록에 없는 세션 %d개가 남아 닫음", left)
+        bridge._sessions.close_all()

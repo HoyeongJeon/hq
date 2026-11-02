@@ -752,3 +752,218 @@ def test_passwords_never_reach_the_log(make, tmp_path, caplog):
     assert wait_for(lambda: any("onSessionEnded" in s for s in h.emitted))
     assert caplog.records
     assert not any(f"Secret-pw-{n}" in caplog.text for n in (1, 2, 3))
+
+
+# ---------- 예상하지 못한 실패 (최종 검토 I-1, I-2, M-10) ----------
+# 화면은 거부된 약속(rejected promise)을 처리하지 않는다. 어떤 실패든 {ok: false, error: 한국어}로 돌아와야 하고,
+# 저장이 실패하면 메모리와 inventory.json이 어긋나지 않아야 한다(다음의 다른 저장이 실패한 변경을 몰래 쓰지 않게).
+
+KOREAN = re.compile("[가-힣]")
+
+
+def failed_korean(result):
+    return isinstance(result, dict) and result.get("ok") is False and bool(KOREAN.search(result.get("error", "")))
+
+
+def raising(error):
+    def call(*args, **kwargs):
+        raise error
+
+    return call
+
+
+def on_disk(tmp_path):
+    inventory = Inventory(tmp_path / "inventory.json")
+    inventory.load()
+    return inventory
+
+
+def in_step(h, tmp_path):
+    disk = on_disk(tmp_path)
+    return h.inventory.servers == disk.servers and h.inventory.admin_ips == disk.admin_ips
+
+
+def secret_files(tmp_path):
+    folder = tmp_path / "secrets"
+    return sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+
+
+def test_a_lone_surrogate_from_the_screen_is_refused_and_later_adds_still_work(make, tmp_path):
+    # 고치기 전에는 UnicodeEncodeError가 빠져나가고 나쁜 행이 메모리에 남아, 그 뒤의 모든 저장이 같은 오류로 실패했다
+    h = make()
+    assert failed_korean(h.bridge.add_server({**WEB, "name": "WEB\ud800"}, "pw"))
+    assert failed_korean(h.bridge.add_server(dict(WEB), "pw\ud800"))
+    assert h.inventory.servers == [] and secret_files(tmp_path) == []
+    added = h.bridge.add_server(dict(WEB), "pw")
+    assert added["ok"] is True
+    assert in_step(h, tmp_path) and secret_files(tmp_path) == [f"{added['server']['id']}.dpapi"]
+
+
+@pytest.mark.parametrize("error", [OSError(28, "디스크 공간이 부족합니다"), RuntimeError("예상하지 못한 오류")],
+                         ids=["OSError", "RuntimeError"])
+def test_a_failed_add_leaves_memory_disk_and_password_files_in_step(make, tmp_path, monkeypatch, error):
+    h = make()
+    kept = h.server()
+    monkeypatch.setattr(h.inventory, "save", raising(error))
+    assert failed_korean(h.bridge.add_server({**WEB, "host": "192.0.2.31"}, "pw"))
+    monkeypatch.undo()
+    assert h.bridge.list_servers()["servers"] == [kept]
+    assert in_step(h, tmp_path)
+    assert secret_files(tmp_path) == [f"{kept['id']}.dpapi"]
+
+
+@pytest.mark.parametrize("error", [OSError(5, "액세스가 거부되었습니다"), RuntimeError("예상하지 못한 오류")],
+                         ids=["OSError", "RuntimeError"])
+def test_a_failed_edit_is_not_kept_in_memory_or_saved_by_the_next_save(make, tmp_path, monkeypatch, error):
+    h = make()
+    server = h.server()
+    monkeypatch.setattr(h.inventory, "save", raising(error))
+    assert failed_korean(h.bridge.update_server(server["id"], {**WEB, "nickname": "바뀐별명"}))
+    monkeypatch.undo()
+    assert h.bridge.list_servers()["servers"] == [server]
+    assert in_step(h, tmp_path)
+    assert h.bridge.save_settings(["198.51.100.50"])["ok"] is True  # 다른 저장이 실패한 수정을 몰래 쓰지 않는다
+    assert on_disk(tmp_path).get(server["id"]).nickname == "웹01"
+
+
+def test_failed_settings_are_not_kept_in_memory(make, tmp_path, monkeypatch):
+    h = make()
+    assert h.bridge.save_settings(["198.51.100.50"])["ok"] is True
+    monkeypatch.setattr(h.inventory, "save", raising(OSError(5, "액세스가 거부되었습니다")))
+    assert failed_korean(h.bridge.save_settings(["198.51.100.60"]))
+    monkeypatch.undo()
+    assert h.bridge.get_settings() == {"ok": True, "admin_ips": ["198.51.100.50"]}
+    assert in_step(h, tmp_path)
+
+
+@pytest.mark.parametrize("error", [OSError(32, "파일을 사용 중입니다"), RuntimeError("예상하지 못한 오류")],
+                         ids=["OSError", "RuntimeError"])
+def test_a_failed_delete_keeps_the_server_its_tabs_and_its_password(make, tmp_path, monkeypatch, error):
+    h = make()
+    server = h.server()
+    assert h.bridge.open_session(SID, server["id"], 80, 24) == {"ok": True}
+    monkeypatch.setattr(h.inventory, "save", raising(error))
+    assert failed_korean(h.bridge.delete_server(server["id"]))
+    monkeypatch.undo()
+    pty = h.spawn.ptys[0]
+    assert pty.written == [] and pty.alive  # 화면에 남은 탭의 세션은 그대로 살아 있다
+    assert h.secrets.has(server["id"])
+    assert h.bridge.list_servers()["servers"] == [server]
+    assert in_step(h, tmp_path)
+    assert h.bridge.save_settings(["198.51.100.50"])["ok"] is True  # 다른 저장이 실패한 삭제를 몰래 쓰지 않는다
+    assert on_disk(tmp_path).get(server["id"]).id == server["id"]
+    assert h.bridge.delete_server(server["id"]) == {"ok": True, "closed_sessions": [SID]}  # 다시 하면 지워진다
+    assert not h.secrets.has(server["id"]) and "exit\r" in pty.written
+
+
+def test_a_password_file_that_cannot_be_removed_is_logged_after_the_delete_is_saved(make, tmp_path, monkeypatch,
+                                                                                    caplog):
+    h = make()
+    server = h.server()
+    monkeypatch.setattr(h.secrets, "delete", raising(PermissionError(5, "액세스가 거부되었습니다")))
+    assert h.bridge.delete_server(server["id"]) == {"ok": True, "closed_sessions": []}
+    assert on_disk(tmp_path).servers == [] and h.inventory.servers == []
+    [warning] = bridge_warnings(caplog)
+    assert warning.exc_info is not None
+
+
+@pytest.mark.parametrize("info", [["WEB"], "WEB", None, 1], ids=["list", "str", "None", "int"])
+def test_server_info_that_is_not_an_object_is_refused_in_korean(make, tmp_path, info):
+    h = make()
+    server = h.server()
+    assert failed_korean(h.bridge.add_server(info, "pw"))
+    assert failed_korean(h.bridge.update_server(server["id"], info))
+    assert h.bridge.list_servers()["servers"] == [server]
+    assert in_step(h, tmp_path)
+
+
+@pytest.mark.parametrize("ips", [5, None, "198.51.100.50", {"ip": "198.51.100.50"}, [5], [None]],
+                         ids=["int", "None", "str", "dict", "list-of-int", "list-of-None"])
+def test_admin_ips_that_are_not_a_list_of_text_are_refused_in_korean(make, ips):
+    h = make()
+    assert failed_korean(h.bridge.save_settings(ips))
+    assert h.bridge.get_settings() == {"ok": True, "admin_ips": []}
+
+
+class Exploding:
+    """어떤 속성을 써도 RuntimeError. 예상하지 못한 내부 고장을 흉내 낸다."""
+
+    def __getattr__(self, name):
+        raise RuntimeError(f"고장: {name}")
+
+
+def screen_calls(server_id):
+    return {
+        "list_servers": (), "add_server": (dict(WEB), "pw"), "update_server": (server_id, dict(WEB)),
+        "set_password": (server_id, "pw"), "delete_server": (server_id,), "probe": (), "save_excel_template": (),
+        "preview_excel": (), "apply_excel": ("a" * 32, False), "missing_trusted_hosts": (), "add_trusted_hosts": (),
+        "server_setup_script": (server_id, False), "get_settings": (), "save_settings": (["198.51.100.50"],),
+        "open_session": ("f" * 32, server_id, 80, 24), "send_input": (SID, "dir\r"), "resize": (SID, 80, 24),
+        "reconnect": (SID, 80, 24), "close_session": (SID,), "quit": (),
+    }
+
+
+def test_the_failure_test_covers_the_whole_screen_api():
+    assert set(screen_calls("a" * 32)) == API
+
+
+@pytest.mark.parametrize("name", sorted(API))
+def test_every_screen_call_answers_ok_false_in_korean_whatever_goes_wrong(make, name, caplog):
+    h = make()
+    server = h.server()
+    assert h.bridge.open_session(SID, server["id"], 80, 24) == {"ok": True}
+    parts = ("_inventory", "_secrets", "_sessions", "_dialogs", "_previews", "_batcher")
+    broken = {part: Exploding() for part in parts}
+    broken |= {part: raising(RuntimeError("고장")) for part in ("_read_trusted", "_add_trusted", "_destroy")}
+    saved = {part: getattr(h.bridge, part) for part in broken}
+    for part, value in broken.items():
+        setattr(h.bridge, part, value)
+    try:
+        result = getattr(h.bridge, name)(*screen_calls(server["id"])[name])
+    finally:
+        for part, value in saved.items():
+            setattr(h.bridge, part, value)
+    assert failed_korean(result), result
+    assert any(w.exc_info for w in bridge_warnings(caplog))
+
+
+def test_a_spawner_that_raises_something_unexpected_leaves_no_ghost_tab(make):
+    # 고치기 전에는 여는 중 표시가 남아 닫을 수 없는 탭이 되었다: X가 확인을 묻고, 끝낼 때 10초를 기다렸다
+    h = make(spawn=raising(RuntimeError("예상하지 못한 오류")))
+    server = h.server()
+    assert failed_korean(h.bridge.open_session(SID, server["id"], 80, 24))
+    assert close_requested(h.bridge) is True
+    assert h.bridge.close_session(SID) == {"ok": True}
+    started = time.monotonic()
+    shutdown(h.bridge)
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_tab_whose_threads_cannot_start_ends_its_powershell(make, monkeypatch):
+    h = make()
+    server = h.server()
+    real_start = threading.Thread.start
+
+    def start(thread):
+        if thread.name.startswith("hq-watch-"):
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    result = h.bridge.open_session(SID, server["id"], 80, 24)
+    monkeypatch.undo()
+    assert failed_korean(result)
+    assert h.spawn.ptys[0].closed
+    assert h.bridge._sessions.open_count() == 0
+    assert close_requested(h.bridge) is True
+    assert h.bridge.open_session(SID, server["id"], 80, 24) == {"ok": True}  # 같은 id의 자리도 비었다
+
+
+def test_shutdown_closes_a_session_that_no_tab_knows_about(make, caplog):
+    # 장부(탭 목록)가 어긋나도 끝낼 때 서버 세션을 남기지 않는다(AC-7). 남았으면 장부 잘못이므로 warning으로 알린다
+    h = make()
+    server = h.server()
+    h.bridge._sessions.open("d" * 32, server["id"], ["powershell.exe"], 80, 24)
+    shutdown(h.bridge)
+    assert "exit\r" in h.spawn.ptys[0].written and h.spawn.ptys[0].closed
+    assert len(bridge_warnings(caplog)) == 1
