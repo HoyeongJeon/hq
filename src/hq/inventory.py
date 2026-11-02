@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -15,6 +16,13 @@ from hq.validation import ValidationError, is_hex_id, validate_host, validate_ip
 VERSION = 1
 UNGROUPED = "미분류"
 _LIMITS = {"name": ("이름", 100), "nickname": ("별명", 50), "group": ("그룹", 50), "memo": ("메모", 4000)}
+_LABELS = {"id": "서버 id", "host": "IP/호스트", "username": "ID", **{k: label for k, (label, _) in _LIMITS.items()}}
+# C0(U+0000~U+001F), DEL, C1(U+0080~U+009F). 이 값들은 화면과 원격 프롬프트(별명)에 그대로 찍히므로, ESC로 시작하는
+# 시퀀스가 화면을 지우거나 터미널이 응답을 입력으로 보내게 할 수 있다. 메모만 줄바꿈과 탭을 둔다
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_MEMO_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# 짝 없는 UTF-16 반쪽. 화면의 JS 문자열에는 올 수 있는데, UTF-8로 저장할 수 없어 저장이 모두 막힌다
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 @dataclass
@@ -37,12 +45,25 @@ class InventoryError(Exception):
 
 
 def _text(raw: Mapping[str, Any], key: str) -> str:
+    """raw[key]의 글자. 없거나 None이면 "". 글자가 아니거나 짝 없는 서로게이트가 들어 있으면 ValidationError."""
     value = raw.get(key)
-    return "" if value is None else str(value)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValidationError(f"{_LABELS[key]}에 글자가 아닌 값이 들어 있습니다.")
+    if _SURROGATE.search(value):
+        raise ValidationError(f"{_LABELS[key]}에 쓸 수 없는 깨진 글자가 들어 있습니다. 다시 입력하세요.")
+    return value
 
 
-def clean_fields(raw: Mapping[str, Any]) -> dict[str, str]:
-    """화면·엑셀에서 받은 값을 검사해 저장할 모양으로 만든다. 문제가 있으면 ValidationError."""
+def clean_fields(raw: Mapping[str, Any], *, allow_controls: bool = False) -> dict[str, str]:
+    """화면·엑셀에서 받은 값을 검사해 저장할 모양으로 만든다. 문제가 있으면 ValidationError.
+
+    allow_controls: 제어 문자를 막지 않는다. 저장된 목록을 읽을 때만 쓴다. 예전 hq는 이름의 줄바꿈(엑셀의 Alt+Enter)이나
+    탭을 받아 저장했으므로, 그 파일을 깨진 파일로 막지 않고 읽는다. 고쳐 저장하는 화면에서는 막는다.
+    """
+    if not isinstance(raw, Mapping):
+        raise ValidationError("서버 정보의 형식이 잘못되었습니다.")
     fields = {
         "name": _text(raw, "name").strip(),
         "nickname": _text(raw, "nickname").strip(),
@@ -54,6 +75,12 @@ def clean_fields(raw: Mapping[str, Any]) -> dict[str, str]:
     for key, (label, limit) in _LIMITS.items():
         if len(fields[key]) > limit:
             raise ValidationError(f"{label}은(는) {limit}자 이하로 입력하세요.")
+        if allow_controls:
+            continue
+        if key == "memo" and _MEMO_CONTROL.search(fields[key]):
+            raise ValidationError(f"{label}에는 줄바꿈과 탭 말고는 제어 문자(ESC 등)를 쓸 수 없습니다.")
+        if key != "memo" and _CONTROL.search(fields[key]):
+            raise ValidationError(f"{label}에는 줄바꿈, 탭, ESC 같은 제어 문자를 쓸 수 없습니다.")
     fields["host"] = validate_host(_text(raw, "host"))
     fields["username"] = validate_username(_text(raw, "username"))
     return fields
@@ -112,7 +139,7 @@ class Inventory:
         server_id = _text(item, "id")
         if not is_hex_id(server_id):
             raise ValueError(f"잘못된 서버 id {server_id!r}")
-        return Server(id=server_id, **clean_fields(item))
+        return Server(id=server_id, **clean_fields(item, allow_controls=True))
 
     def _find(self, server_id: str) -> Server:
         for server in self._servers:
