@@ -7,12 +7,14 @@
 import threading
 import time
 import uuid
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell.read_only import EMPTY_CELL, EmptyCell, ReadOnlyCell
 from openpyxl.styles import Font
 
 from hq.inventory import Inventory, clean_fields
@@ -38,7 +40,7 @@ HELP_LINES = [
 ]
 _EXACT_LIMIT = 10**15  # 엑셀은 유효 숫자 15자리까지만 정확히 둔다. 이보다 큰 정수는 친 숫자와 다를 수 있다
 _PASSWORD_NOT_TEXT = (
-    "PW 칸을 엑셀이 글자가 아닌 값으로 바꿨습니다(소수, 날짜, TRUE/FALSE, 15자리를 넘는 숫자). "
+    "PW 칸을 엑셀이 글자가 아닌 값으로 바꿨습니다(소수, 날짜, TRUE/FALSE, 15자리를 넘는 숫자, 오류 값). "
     "칸 서식을 '텍스트'로 바꾸고 다시 입력하세요."
 )
 _EXAMPLE = ["WEB-PRD-01", "웹01", "10.0.1.21", "운영", "Administrator", "(비밀번호)", "IIS 8.5"]
@@ -77,11 +79,16 @@ def _cell_text(value: Any) -> str:
     return text.strip()
 
 
-def _password_text(value: Any) -> str | None:
+def _password_text(cell: ReadOnlyCell | EmptyCell) -> str | None:
     """PW 칸의 글자. 앞뒤 공백은 그대로 둔다. 친 글자를 엑셀이 바꿨을 수 있는 값이면 None.
 
     값을 str()로 바꾸지 않고 형만 보고 고른다. 이 칸의 값은 비밀번호의 대부분일 수 있다.
     """
+    # 오류 값(#DIV/0! 등)은 openpyxl이 글자로 돌려주므로 칸의 형으로 거른다. 날짜 범위를 넘는 날짜 칸도
+    # openpyxl이 "#VALUE!" 오류 값으로 바꾼다. 텍스트 칸에 친 "#N/A"는 형이 글자라 그대로 쓴다
+    if cell.data_type == "e":
+        return None
+    value = cell.value
     if value is None:
         return ""
     if isinstance(value, str):
@@ -111,17 +118,23 @@ def read_rows(path: Path) -> list[tuple[int, list[str | None]]]:
     result: list[tuple[int, list[str | None]]] | None = []
     try:
         # read_only라서 시트 XML은 여기서 읽힌다. 그래서 내용이 깨진 파일의 예외도 여기서 난다.
-        sheet = workbook["서버"] if "서버" in workbook.sheetnames else workbook.worksheets[0]
-        rows = sheet.iter_rows(values_only=True)
-        header = [_cell_text(v) for v in (next(rows, None) or ())]
-        if header[: len(HEADERS)] != HEADERS:
-            raise ExcelError("양식이 다릅니다. [양식 저장]으로 받은 파일의 1행 머리글을 그대로 두세요.")
-        for number, values in enumerate(rows, start=2):
-            cells = list(values or ())[: len(HEADERS)]
-            cells += [None] * (len(HEADERS) - len(cells))
-            texts = [_password_text(v) if i == _PASSWORD_COLUMN else _cell_text(v) for i, v in enumerate(cells)]
-            if any(t is None or t.strip() for t in texts):  # 글자가 아닌 PW 칸만 있는 행도 오류 행으로 보인다
-                result.append((number, texts))
+        # openpyxl은 날짜 범위를 넘는 날짜 칸의 수를 경고 문구에 넣어 stderr로 찍는다. 그 수는 비밀번호일 수
+        # 있으므로 시트를 읽는 동안에는 경고를 아예 내지 않는다.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sheet = workbook["서버"] if "서버" in workbook.sheetnames else workbook.worksheets[0]
+            rows = sheet.iter_rows()
+            header = [_cell_text(c.value) for c in (next(rows, None) or ())]
+            if header[: len(HEADERS)] != HEADERS:
+                raise ExcelError("양식이 다릅니다. [양식 저장]으로 받은 파일의 1행 머리글을 그대로 두세요.")
+            for number, row in enumerate(rows, start=2):
+                cells = list(row or ())[: len(HEADERS)]
+                cells += [EMPTY_CELL] * (len(HEADERS) - len(cells))
+                texts = [
+                    _password_text(c) if i == _PASSWORD_COLUMN else _cell_text(c.value) for i, c in enumerate(cells)
+                ]
+                if any(t is None or t.strip() for t in texts):  # 글자가 아닌 PW 칸만 있는 행도 오류 행으로 보인다
+                    result.append((number, texts))
     except ExcelError:
         raise
     except Exception:

@@ -1,6 +1,7 @@
 import logging
 import re
 import traceback
+import warnings
 import zipfile
 from datetime import date, datetime, time, timedelta
 
@@ -55,7 +56,7 @@ def password_of(secrets, server_id):
 
 
 NOT_TEXT_PW = (
-    "PW 칸을 엑셀이 글자가 아닌 값으로 바꿨습니다(소수, 날짜, TRUE/FALSE, 15자리를 넘는 숫자). "
+    "PW 칸을 엑셀이 글자가 아닌 값으로 바꿨습니다(소수, 날짜, TRUE/FALSE, 15자리를 넘는 숫자, 오류 값). "
     "칸 서식을 '텍스트'로 바꾸고 다시 입력하세요."
 )
 
@@ -77,6 +78,11 @@ def with_raw_numbers(tmp_path, rows, raw):
         return data
 
     return rewrite_sheet(source, tmp_path / "a.xlsx", edit)
+
+
+def replace_once(data, old, new):
+    assert data.count(old) == 1, old
+    return data.replace(old, new)
 
 
 def password_cells(path):
@@ -218,6 +224,54 @@ def test_whole_number_passwords_are_kept_only_while_excel_holds_every_digit(tmp_
         ("new", "", "  pw  "),
     ]
     assert [(r.status, r.error, r.password) for r in preview.rows] == kept + [("error", NOT_TEXT_PW, "")] * 4
+
+
+def test_password_cells_holding_an_excel_error_value_are_error_rows(tmp_path):
+    # 수식 오류(#DIV/0! 등)도 openpyxl은 글자로 돌려준다. 칸의 형(data_type "e")으로만 글자로 친 값과 구별된다
+    rows = rows_with_passwords(["#DIV/0!", "#DIV/0!", "#N/A"])
+    rows[2][6] = "#REF!"  # PW가 아닌 칸의 오류 값은 지금처럼 글자로 읽는다
+    source = make_xlsx(tmp_path / "src.xlsx", rows)  # openpyxl은 "#DIV/0!", "#N/A" 같은 글자를 오류 칸으로 적는다
+
+    def edit(data):
+        formula = b'<c r="F3" t="e"><f>1/0</f><v>#DIV/0!</v></c>'  # 엑셀이 저장한 수식 칸
+        typed = b'<c r="F4" t="inlineStr"><is><t>#N/A</t></is></c>'  # 텍스트 칸에 친 #N/A
+        data = replace_once(data, b'<c r="F3" t="e"><v>#DIV/0!</v></c>', formula)
+        return replace_once(data, b'<c r="F4" t="e"><v>#N/A</v></c>', typed)
+
+    path = rewrite_sheet(source, tmp_path / "a.xlsx", edit)
+    assert password_cells(path) == ["#DIV/0!", "#DIV/0!", "#N/A"]  # 값만 보면 셋 다 같은 글자다
+    inventory, secrets = fresh(tmp_path)
+    preview = build_preview(path, inventory)
+    assert [(r.status, r.error, r.password) for r in preview.rows] == [
+        ("error", NOT_TEXT_PW, ""),
+        ("error", NOT_TEXT_PW, ""),
+        ("new", "", "#N/A"),
+    ]
+    assert preview.rows[2].fields["memo"] == "#REF!"
+    result = apply_preview(preview, inventory, secrets, overwrite=True)
+    assert (result.added, result.updated, result.skipped, result.errors) == (1, 0, 0, 2)
+    [server] = inventory.servers
+    assert server.host == "10.0.2.3" and password_of(secrets, server.id) == "#N/A"
+
+
+def test_an_out_of_range_date_password_cell_is_an_error_row_and_its_number_is_never_printed(tmp_path, capfd):
+    # 날짜 서식 칸의 수가 날짜 범위를 넘으면 openpyxl은 그 수를 넣은 경고를 내고 "#VALUE!" 오류 값을 돌려준다
+    path = make_xlsx(tmp_path / "a.xlsx", rows_with_passwords([98765432]))
+    workbook = load_workbook(path)
+    workbook["서버"]["F2"].number_format = "yyyy-mm-dd"
+    workbook.save(path)
+    with warnings.catch_warnings(record=True) as raw:
+        warnings.simplefilter("always")
+        assert password_cells(path) == ["#VALUE!"]
+    assert any("98765432" in str(w.message) for w in raw)  # openpyxl만으로 읽으면 수가 경고에 찍힌다
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        preview = build_preview(path, fresh(tmp_path)[0])
+    assert [str(w.message) for w in caught] == []
+    assert [(r.status, r.error, r.password) for r in preview.rows] == [("error", NOT_TEXT_PW, "")]
+    out, err = capfd.readouterr()
+    assert "98765432" not in out + err + repr(preview.rows)
 
 
 def test_a_row_with_only_a_non_text_password_is_an_error_row_not_a_blank_one(tmp_path):
