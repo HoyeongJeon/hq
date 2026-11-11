@@ -42,12 +42,47 @@ def test_end_never_holds_server_output(tmp_path):
     assert lines(tmp_path)[0]["results"] == [
         {"target": "t", "status": "OK", "exit_code": 0, "seconds": 2.0, "output_chars": 9}
     ]
+    assert lines(tmp_path) == [
+        {
+            "event": "end",
+            "time": "2026-11-10T00:00:00",
+            "call": "c1",
+            "seconds": 2.5,
+            "results": [{"target": "t", "status": "OK", "exit_code": 0, "seconds": 2.0, "output_chars": 9}],
+        }
+    ]
+
+
+def test_a_start_without_a_reason_writes_null(tmp_path):
+    AuditLog(tmp_path, now=lambda: datetime(2026, 11, 10)).start("c2", "run_query", [], "Get-Date", None)
+    assert lines(tmp_path) == [
+        {
+            "event": "start",
+            "time": "2026-11-10T00:00:00",
+            "call": "c2",
+            "tool": "run_query",
+            "targets": [],
+            "script": "Get-Date",
+            "sha256": hashlib.sha256(b"Get-Date").hexdigest(),
+            "reason": None,
+        }
+    ]
 
 
 def test_start_raises_when_the_record_cannot_be_written(tmp_path):
     (tmp_path / "blocked").write_text("x")  # 폴더 자리에 파일
     with pytest.raises(OSError):
         AuditLog(tmp_path / "blocked").start("c", "run_query", [], "x", None)
+
+
+def test_start_raises_and_end_warns_when_the_month_file_cannot_be_opened(tmp_path, caplog):
+    (tmp_path / "mcp-audit-2026-11.jsonl").mkdir()  # 파일 자리에 폴더
+    log = AuditLog(tmp_path, now=lambda: datetime(2026, 11, 10))
+    with pytest.raises(OSError):
+        log.start("c", "run_query", [], "x", None)
+    with caplog.at_level(logging.WARNING, logger="hq.mcp.audit"):
+        log.end("c", [], 1.0)
+    assert [r.levelno for r in caplog.records if r.name == "hq.mcp.audit"] == [logging.WARNING]
 
 
 def test_eight_threads_never_mix_their_lines(tmp_path):
@@ -67,6 +102,26 @@ def test_eight_threads_never_mix_their_lines(tmp_path):
     records = lines(tmp_path)
     assert len(records) == 400 and all(r["script"] == "가" * 3_000 for r in records)
     assert {r["call"] for r in records} == {f"c{n}-{i}" for n in range(8) for i in range(50)}
+
+
+def test_two_logs_on_one_folder_never_lose_a_line(tmp_path):
+    # 두 hq.mcp 프로세스(Claude Code 창 둘)가 같은 달 파일에 쓰는 경우. 잠금은 객체마다 따로다
+    logs = [AuditLog(tmp_path, now=lambda: datetime(2026, 11, 10)) for _ in range(2)]
+    ready = threading.Barrier(8)
+
+    def write(n):
+        ready.wait()
+        for i in range(50):  # 한 줄이 파일 버퍼(8,192바이트)보다 길다
+            logs[n % 2].start(f"c{n}-{i}", "run_script", [("웹01 (10.0.1.21)", "10.0.1.21")], "가" * 3_000, None)
+
+    threads = [threading.Thread(target=write, args=(n,)) for n in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    records = lines(tmp_path)  # 깨진 줄이 있으면 여기서 JSON으로 읽지 못한다
+    assert all(r["script"] == "가" * 3_000 for r in records)
+    assert sorted(r["call"] for r in records) == sorted(f"c{n}-{i}" for n in range(8) for i in range(50))
 
 
 def test_a_rejection_is_recorded_with_the_script_and_the_reason(tmp_path):
@@ -107,6 +162,14 @@ def test_a_rejection_only_warns_when_the_record_cannot_be_written(tmp_path, capl
     with caplog.at_level(logging.WARNING, logger="hq.mcp.audit"):
         AuditLog(tmp_path / "blocked").rejected("run_query", "x", "y")
     assert [r.levelno for r in caplog.records if r.name == "hq.mcp.audit"] == [logging.WARNING]
+
+
+def test_characters_some_readers_take_as_line_breaks_stay_inside_one_line(tmp_path):
+    # str.splitlines()와 일부 편집기는 U+0085, U+2028, U+2029도 줄바꿈으로 본다
+    script = "a\x85b\N{LINE SEPARATOR}c\N{PARAGRAPH SEPARATOR}d\ne\rf\x00g"
+    AuditLog(tmp_path, now=lambda: datetime(2026, 11, 10)).rejected("run_query", script, "이유")
+    text = (tmp_path / "mcp-audit-2026-11.jsonl").read_text(encoding="utf-8")
+    assert len(text.splitlines()) == 1 and json.loads(text)["script"] == script
 
 
 def test_a_lone_surrogate_from_claude_is_recorded_as_it_came(tmp_path):

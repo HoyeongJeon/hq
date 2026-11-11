@@ -3,13 +3,19 @@
 받은 폴더(보통 %LOCALAPPDATA%\\hq\\logs)의 mcp-audit-YYYY-MM.jsonl에 시작, 끝, 거절을 한 줄에 JSON 하나로 이어 쓰고
 지우지 않는다. hq.log에 입출력을 남기지 않는 규칙의 예외다. 서버 출력, 비밀번호, 사용자 이름, 비밀번호 파일 경로는
 남기지 않는다. 대상은 target 글자와 host만 남긴다.
+
+줄 하나는 FILE_APPEND_DATA만 가진 핸들에 WriteFile 한 번으로 붙인다. 그러면 Windows가 끝에 붙이기를 원자적으로 하므로,
+다른 hq.mcp 프로세스나 다른 AuditLog가 같은 파일에 써도 줄이 서로 덮어쓰지 않는다. C 런타임의 "a" 모드는 끝으로
+옮긴 뒤 쓰는 두 단계라 핸들 사이에서 원자적이지 않다.
 """
 
+import ctypes
 import hashlib
 import json
 import logging
 import threading
 from collections.abc import Callable, Sequence
+from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 
@@ -17,12 +23,45 @@ from hq.mcp.runner import RunOutcome
 
 _log = logging.getLogger(__name__)
 
+_FILE_APPEND_DATA = 0x0004
+_SYNCHRONIZE = 0x00100000
+_FILE_SHARE_READ = 0x1
+_FILE_SHARE_WRITE = 0x2
+_OPEN_ALWAYS = 4
+_FILE_ATTRIBUTE_NORMAL = 0x80
+_INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+# str.splitlines()와 일부 편집기가 줄바꿈으로 보는 글자. json.dumps(ensure_ascii=False)는 그대로 두므로 JSON
+# 이스케이프로 바꾼다. JSON 문자열 안에만 나오고, 읽으면 같은 글자가 된다
+_LINE_BREAKS = str.maketrans({char: json.dumps(char)[1:-1] for char in "\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}"})
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.CreateFileW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.HANDLE,
+]
+_kernel32.CreateFileW.restype = wintypes.HANDLE
+_kernel32.WriteFile.argtypes = [
+    wintypes.HANDLE,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.c_void_p,
+]
+_kernel32.WriteFile.restype = wintypes.BOOL
+_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel32.CloseHandle.restype = wintypes.BOOL
+
 
 class AuditLog:
     def __init__(self, directory: Path, *, now: Callable[[], datetime] = datetime.now) -> None:
         self._directory = directory
         self._now = now
-        # 동시에 돈 호출의 줄이 섞이거나 서로 덮어쓰지 않게 한 줄씩 쓴다
+        # 동시에 돈 호출의 줄을 이 객체 안에서는 한 줄씩 쓴다. 다른 객체, 다른 프로세스와는 _append가 지킨다
         self._lock = threading.Lock()
 
     def start(
@@ -70,10 +109,33 @@ class AuditLog:
     def _write(self, event: str, fields: dict) -> None:
         moment = self._now()  # 시각과 파일 이름의 달이 같은 순간에서 온다
         record = {"event": event, "time": moment.isoformat(timespec="seconds"), **fields}
-        line = json.dumps(record, ensure_ascii=False) + "\n"
+        line = json.dumps(record, ensure_ascii=False).translate(_LINE_BREAKS) + "\n"
+        # 짝 없는 서로게이트는 \udXXX로 쓴다. JSON 문자열 안이므로 읽으면 같은 글자가 된다
+        data = line.encode("utf-8", "backslashreplace")
         path = self._directory / f"mcp-audit-{moment:%Y-%m}.jsonl"
         with self._lock:
             self._directory.mkdir(parents=True, exist_ok=True)
-            # 짝 없는 서로게이트는 \udXXX로 쓴다. JSON 문자열 안이므로 읽으면 같은 글자가 된다
-            with path.open("a", encoding="utf-8", errors="backslashreplace", newline="\n") as file:
-                file.write(line)
+            _append(path, data)
+
+
+def _append(path: Path, data: bytes) -> None:
+    """data를 파일 끝에 WriteFile 한 번으로 붙인다. 파일이 없으면 만든다. 실패하면 OSError를 던진다."""
+    handle = _kernel32.CreateFileW(
+        str(path),
+        _FILE_APPEND_DATA | _SYNCHRONIZE,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        None,
+        _OPEN_ALWAYS,
+        _FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if handle == _INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        written = wintypes.DWORD()
+        if not _kernel32.WriteFile(handle, data, len(data), ctypes.byref(written), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if written.value != len(data):
+            raise OSError("실행 기록 줄을 끝까지 쓰지 못했습니다.")
+    finally:
+        _kernel32.CloseHandle(handle)
