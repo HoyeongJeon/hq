@@ -6,6 +6,8 @@
 import io
 import itertools
 import subprocess
+import threading
+import time
 import tracemalloc
 from pathlib import Path
 
@@ -66,6 +68,15 @@ class FakeProc:
 
     def kill(self) -> None:
         self.killed = True
+
+
+class SlowProc(FakeProc):
+    """스스로 끝나지 않고, 끝내기 전의 wait(timeout)은 그 시간만큼 실제로 기다린다."""
+
+    def wait(self, timeout: float | None = None) -> int:
+        if not self.killed:
+            time.sleep(timeout)
+        return super().wait(timeout)
 
 
 @pytest.fixture
@@ -146,6 +157,21 @@ def test_the_direct_child_is_still_ended_when_taskkill_fails_or_hangs(monkeypatc
     result = run_ps_template(TEMPLATE, {}, timeout=0.01)
     assert result.killed and result.code is None
     assert timeouts == [10] and proc.killed and proc.waits == [0.01, 10]
+
+
+@pytest.mark.usefixtures("runs")
+def test_the_stop_grace_never_extends_the_timeout(monkeypatch, tmp_path):
+    # 멈춤 파일이 시간 한도 1초 전에 생겨도 stop_grace(10초)를 다 주지 않고 원래 한도에서 끝낸다
+    stop = tmp_path / "stop"
+    proc = use(monkeypatch, SlowProc(ends=False))
+    timer = threading.Timer(0.5, stop.touch)
+    timer.start()
+    began = time.monotonic()
+    try:
+        result = run_ps_template(TEMPLATE, {}, timeout=1.5, stop_path=stop, stop_grace=10)
+    finally:
+        timer.cancel()
+    assert result.killed and proc.killed and 1.4 < time.monotonic() - began < 3
 
 
 @pytest.mark.usefixtures("runs")

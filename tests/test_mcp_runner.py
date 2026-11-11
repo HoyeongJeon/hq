@@ -1,5 +1,6 @@
 """hq.mcp.runner를 가짜 run으로 확인한다: 종료 코드를 상태로 바꾸기, 강제 종료, 시간 한도, 잘림, 띄우지 못함."""
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,7 @@ def test_the_process_gets_the_timeout_plus_ten_seconds_and_the_payload_has_six_k
 
     def run(template, payload, *, timeout, **k):
         seen.update(name=template.name, keys=sorted(payload), timeout=timeout)
+        seen.update(stop_path=k["stop_path"], stop_grace=k["stop_grace"])
         return PsResult(0, "", "", 0, False)
 
     run_on_server(JOB, trusted=None, run=run)
@@ -57,6 +59,8 @@ def test_the_process_gets_the_timeout_plus_ten_seconds_and_the_payload_has_six_k
         "name": "mcp-run.ps1",
         "timeout": 40,
         "keys": ["cancel_path", "host", "script", "secret_path", "timeout_seconds", "username"],
+        "stop_path": JOB.cancel_path,
+        "stop_grace": 10,
     }
 
 
@@ -80,3 +84,15 @@ def test_the_outcome_carries_both_streams_the_count_and_the_note_of_21():
     )
     assert result.note == "시간 한도에서 멈췄습니다. 그 전까지는 서버에서 실행됐습니다."
     assert outcome(0).note == "" and outcome(None, killed=True).exit_code is None
+
+
+def test_a_kill_after_a_cancel_is_cancelled_and_warns_the_script_may_still_run(tmp_path):
+    cancel = tmp_path / "1.cancel"
+    cancel.touch()
+    job = dataclasses.replace(JOB, cancel_path=cancel)
+    result = run_on_server(job, trusted=None, run=lambda *a, **k: PsResult(None, "", "", 0, True))
+    assert (result.status, result.note) == ("CANCELLED", "강제로 끝냈습니다. 서버에서 계속 돌 수 있습니다.")
+
+
+def test_a_disconnect_warns_that_the_script_may_still_run():
+    assert outcome(20).note == "연결이 끊겼습니다. 서버에서 계속 돌 수 있습니다."

@@ -32,6 +32,7 @@ _CHUNK = 65536
 # 있어도 이보다 오래 기다리지 않는다.
 _DRAIN_SECONDS = 5.0
 _KILL_SECONDS = 10  # taskkill과, 강제로 끝낸 프로세스를 기다리는 한도
+_STOP_POLL_SECONDS = 0.2  # 멈춤 파일(stop_path)을 보는 간격
 _TASKKILL = str(Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32" / "taskkill.exe")
 # 이 PC의 PowerShell 5.1(2026-11-11): 오류 스트림에 첫 기록이 오면 표시 줄을 곧바로 쓰고, 기록은 <Objs ...> 덩어리로
 # 모아 두었다가 약 6,000자마다, 그리고 끝날 때 쓴다(</Objs> 뒤에 줄바꿈 없음).
@@ -77,9 +78,18 @@ def loader_argv(template: Path) -> list[str]:
 
 
 def run_ps_template(
-    template: Path, payload: Mapping[str, object], *, timeout: float, keep_chars: int = 40_000
+    template: Path,
+    payload: Mapping[str, object],
+    *,
+    timeout: float,
+    keep_chars: int = 40_000,
+    stop_path: Path | None = None,
+    stop_grace: float = 10.0,
 ) -> PsResult:
     """템플릿을 돌리고 끝나기를 기다린다. timeout초가 지나면 프로세스 트리를 끝낸다. 띄우지 못하면 OSError를 던진다.
+
+    stop_path가 있으면 기다리는 동안 약 0.2초마다 그 파일을 본다. 처음 보인 때부터 stop_grace초가 지나도 끝나지
+    않으면 트리를 끝낸다. 템플릿이 스스로 정리할 시간이다. 원래의 timeout을 늘리지는 않는다.
 
     입력, 출력, 오류를 모두 따로 파이프로 이어 MCP의 표준 입출력을 물려주지 않는다. 출력과 오류는 합쳐 앞
     keep_chars자까지만 두고 나머지는 세기만 한다.
@@ -93,13 +103,20 @@ def run_ps_template(
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
     try:
-        return _collect(proc, data, timeout, keep_chars)
+        return _collect(proc, data, timeout, keep_chars, stop_path, stop_grace)
     except BaseException:
         _end_tree(proc)  # 무엇이 실패하든 띄운 프로세스 트리를 남기지 않고 예외를 그대로 올린다
         raise
 
 
-def _collect(proc: subprocess.Popen[bytes], data: bytes, timeout: float, keep_chars: int) -> PsResult:
+def _collect(
+    proc: subprocess.Popen[bytes],
+    data: bytes,
+    timeout: float,
+    keep_chars: int,
+    stop_path: Path | None,
+    stop_grace: float,
+) -> PsResult:
     kept = _Kept(keep_chars)
     readers = [
         threading.Thread(target=_drain, args=(proc.stdout, kept.stdout, kept), name="hq-ps-stdout", daemon=True),
@@ -111,16 +128,37 @@ def _collect(proc: subprocess.Popen[bytes], data: bytes, timeout: float, keep_ch
         reader.start()
     # 값도 따로 쓴다. 템플릿이 읽지 않고 멈춰 있으면 쓰기가 막히는데, 그래도 timeout은 지켜야 한다
     threading.Thread(target=_feed, args=(proc.stdin, data), name="hq-ps-stdin", daemon=True).start()
-    try:
-        code = proc.wait(timeout)
-    except subprocess.TimeoutExpired:
+    code = _wait(proc, timeout, stop_path, stop_grace)
+    if code is None:
         _end_tree(proc)
-        code = None
     drained_by = time.monotonic() + _DRAIN_SECONDS
     for reader in readers:
         reader.join(max(0.0, drained_by - time.monotonic()))
     stdout, stderr, total_chars = kept.snapshot()
     return PsResult(code, stdout, stderr, total_chars, killed=code is None)
+
+
+def _wait(proc: subprocess.Popen[bytes], timeout: float, stop_path: Path | None, stop_grace: float) -> int | None:
+    """프로세스의 종료 코드. 한도까지 끝나지 않으면 None. 한도는 timeout이고, stop_path가 처음 보이면 그때부터
+    stop_grace초로 줄어든다(늘어나지는 않는다)."""
+    if stop_path is None:
+        try:
+            return proc.wait(timeout)
+        except subprocess.TimeoutExpired:
+            return None
+    deadline = time.monotonic() + timeout
+    seen = False
+    while True:
+        now = time.monotonic()
+        if not seen and stop_path.exists():
+            seen = True
+            deadline = min(deadline, now + stop_grace)
+        if now >= deadline:
+            return None
+        try:
+            return proc.wait(min(_STOP_POLL_SECONDS, deadline - now))
+        except subprocess.TimeoutExpired:
+            pass
 
 
 class _Kept:

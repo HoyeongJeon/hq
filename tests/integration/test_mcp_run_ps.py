@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from pipesession import pipe_session
-from ps import parse_errors
+from ps import parse_errors, run_ps
 
 from hq.mcp.runner import RunOutcome, ServerJob, run_on_server
 from hq.secret_store import SecretStore
@@ -21,6 +21,7 @@ pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[2]
 PS_DIR = ROOT / "src" / "hq" / "ps"
+TEMPLATE = PS_DIR / "mcp-run.ps1"
 SESSION_START = "#region session"
 SESSION_END = "#endregion session"
 SERVER_ID = "0123456789abcdef0123456789abcdef"
@@ -32,11 +33,12 @@ PIPE = pipe_session("$session") + (
 )
 # 실행된 쪽에 ran-server.txt(서버) 또는 ran-client.txt(템플릿을 돌린 이 PC의 powershell.exe)를 남긴다
 MARK = 'New-Item -ItemType File -Path (Join-Path $env:HQ_DIR "ran-$env:HQ_WHO.txt") | Out-Null'
+BLOCKED_LINE = "스크립트가 입력을 기다려 멈췄습니다(확인 질문, Read-Host 등). 원격 실행에서는 답할 수 없습니다."
 
 
 def template_copy(folder: Path, session: str) -> Path:
     """mcp-run.ps1과 bootstrap.ps1을 folder에 복사하고, 사본의 세션 구역을 session 글자로 바꾼다."""
-    text = (PS_DIR / "mcp-run.ps1").read_text(encoding="utf-8")
+    text = TEMPLATE.read_text(encoding="utf-8")
     start = text.index(SESSION_START)
     end = text.index(SESSION_END, start) + len(SESSION_END)
     copy = text[:start] + session + text[end:]
@@ -54,8 +56,13 @@ def secret_file(tmp_path: Path) -> Path:
     return store.path_for(SERVER_ID)
 
 
-def run(tmp_path, script, *, session=PIPE, timeout=20, cancel_after=None) -> RunOutcome:
+def run(tmp_path, script, *, session=PIPE, timeout=20, cancel_after=None, edit=None) -> RunOutcome:
+    """edit = (옛 글자, 새 글자)면 사본에서 한 곳을 더 바꾼다(템플릿 안을 들여다보는 시험용)."""
     template = template_copy(tmp_path / "template", session)
+    if edit is not None:
+        text = template.read_text(encoding="utf-8")
+        assert text.count(edit[0]) == 1, edit[0]
+        template.write_text(text.replace(*edit), encoding="utf-8")
     cancel = tmp_path / "run.cancel"
     cancel.unlink(missing_ok=True)
     job = ServerJob("시험 (10.0.1.21)", "10.0.1.21", "hq-test", secret_file(tmp_path), script, timeout, cancel)
@@ -75,7 +82,11 @@ def test_the_script_runs_on_the_far_side_and_hangul_comes_back(tmp_path, local_s
     assert (tmp_path / "ran-server.txt").exists() and not (tmp_path / "ran-client.txt").exists()
 
 
-@pytest.mark.parametrize("session", ["$session = $null\n", "throw 'no session'\n", ""], ids=["null", "throws", "none"])
+@pytest.mark.parametrize(
+    "session",
+    ["$session = $null\n", "throw 'no session'\n", "", PIPE + "Remove-PSSession $session\n"],
+    ids=["null", "throws", "none", "closed"],  # closed: 세션 개체는 있지만 Opened가 아니다
+)
 def test_without_a_session_nothing_runs_anywhere(tmp_path, local_server, session):
     result = run(tmp_path, MARK, session=session)
     assert result.status != "OK" and list(tmp_path.glob("ran-*.txt")) == [], result
@@ -92,6 +103,26 @@ def test_using_cannot_read_the_templates_variables(tmp_path, local_server):
     result = run(tmp_path, "($using:cred).GetNetworkCredential().Password")
     assert result.status == "OK" and result.errors.strip() != "" and result.output.strip() == "", result
     assert "pw-PROBE-456" not in result.output + result.errors
+
+
+def test_a_syntax_error_is_a_script_error(tmp_path, local_server):
+    # 스크립트는 서버에서만 파싱한다. 문법 오류도 서버에서 나서 스크립트 오류가 된다
+    result = run(tmp_path, "foo(")
+    assert (result.status, result.exit_code) == ("SCRIPT_ERROR", 2) and result.errors.strip() != "", result
+
+
+def test_the_remote_block_is_sent_as_text_and_never_parsed_here(tmp_path):
+    # 원격 실행 명령은 블록을 명령 개체로 바꿔 보려고 블록의 식을 이 PC에서 계산한다(GetPowerShell). 그러면 스크립트가
+    # 이 PC에서 파싱된다. 템플릿의 블록은 그 변환이 스크립트를 보기 전에 거절되는 모양이어야 글자 그대로 서버로 간다
+    line = next(x for x in TEMPLATE.read_text(encoding="utf-8").splitlines() if "-ScriptBlock {" in x)
+    block = line[line.index("-ScriptBlock {") + len("-ScriptBlock {") : line.rindex("}")]
+    check = (
+        "$b = [scriptblock]::Create($env:HQ_BLOCK)\n"
+        "try { $null = $b.GetPowerShell($true, @('foo(')); 'converted' } catch {\n"
+        "    $e = $_.Exception; while ($null -ne $e.InnerException) { $e = $e.InnerException }; $e.GetType().Name }\n"
+    )
+    result = run_ps(check, env={"HQ_BLOCK": block})
+    assert result.stdout.split() == ["ScriptBlockToPowerShellNotSupportedException"], result.stdout + result.stderr
 
 
 def test_a_thrown_error_is_a_script_error_and_a_written_error_is_not(tmp_path, local_server):
@@ -115,6 +146,30 @@ def test_progress_records_are_dropped_and_do_not_disturb_the_output(tmp_path, lo
     assert (result.status, result.output.strip(), result.errors) == ("OK", "done", ""), result
 
 
+# 마지막으로 기록을 옮긴 뒤 작업 안쪽 모음(Results)에 남은 수를 tmp_path/results-left.txt에 쓴다
+RESULTS_LEFT = (
+    "    Write-HqStreams\n"
+    "    [IO.File]::WriteAllText((Join-Path $env:HQ_DIR 'results-left.txt'), [string][System.Management.Automation.Job]"
+    ".GetProperty('Results', [Reflection.BindingFlags]'Instance, NonPublic').GetValue($hqChild).Count)\n"
+)
+
+
+def test_the_job_keeps_no_second_copy_of_the_output(tmp_path, local_server):
+    # 원격 작업은 모든 기록을 안쪽 Results 모음에도 쌓는다. 비우지 않으면 메모리가 출력 크기만큼 는다
+    edit = ("    Write-HqStreams\n\n    # 7.", RESULTS_LEFT + "\n    # 7.")
+    result = run(tmp_path, '1..20000 | ForEach-Object { "line $_" }', edit=edit)
+    lines = sum(len(f"line {i}\n") for i in range(1, 20001))
+    assert (result.status, result.output_chars, result.errors) == ("OK", lines, ""), (result.status, result.errors)
+    assert (tmp_path / "results-left.txt").read_text(encoding="utf-8") == "0"
+
+
+def test_a_script_that_waits_for_input_is_stopped_at_once(tmp_path, local_server):
+    started = time.monotonic()
+    result = run(tmp_path, "'before'; Read-Host 'q'; " + MARK, timeout=20)
+    assert (result.status, result.exit_code) == ("SCRIPT_ERROR", 2) and time.monotonic() - started < 12, result
+    assert "before" in result.output and BLOCKED_LINE in result.errors and list(tmp_path.glob("ran-*.txt")) == []
+
+
 def test_the_time_limit_stops_the_script_inside_powershell(tmp_path, local_server):
     started = time.monotonic()
     result = run(tmp_path, "'before'; Start-Sleep 60; " + MARK, timeout=5)
@@ -125,6 +180,15 @@ def test_the_time_limit_stops_the_script_inside_powershell(tmp_path, local_serve
 
 def test_the_cancel_file_stops_it_the_same_way(tmp_path, local_server):
     assert run(tmp_path, "Start-Sleep 60", cancel_after=2).exit_code == 22
+
+
+def test_a_cancel_ends_the_run_even_when_the_far_side_does_not_stop(tmp_path, local_server, monkeypatch):
+    # Stop-Job은 서버의 파이프라인이 실제로 멈출 때까지 기다리고, Thread.Sleep은 멈추라는 요청을 듣지 않는다.
+    # 취소 파일이 생긴 뒤 정리 시간(시험에서는 2초)이 지나면 psrun이 프로세스 트리를 끝낸다
+    monkeypatch.setattr("hq.mcp.runner.GRACE_SECONDS", 2)
+    started = time.monotonic()
+    result = run(tmp_path, "[Threading.Thread]::Sleep(20000)", cancel_after=1)
+    assert result.status == "CANCELLED" and time.monotonic() - started < 12, result
 
 
 @pytest.mark.parametrize("content", [None, "not-hex"], ids=["missing", "not-a-secret"])
@@ -159,9 +223,12 @@ def test_a_server_that_dies_during_the_script_is_disconnected(tmp_path, local_se
 
 
 def test_the_template_is_valid_51_and_never_runs_a_script_without_a_session(tmp_path):
-    text = (ROOT / "src/hq/ps/mcp-run.ps1").read_text(encoding="utf-8")
+    text = TEMPLATE.read_text(encoding="utf-8")
     assert parse_errors(text, tmp_path) == []
     assert text.count("Invoke-Command") == text.count("Invoke-Command -Session $session")
     assert "-Authentication Negotiate" in text and "FromBase64String" not in text and "$using:" not in text
     # 비밀번호를 읽지 못해 끝나는 길이 세션 구역보다 앞에 있다
     assert text.index("[Environment]::Exit(14)") < text.index(SESSION_START)
+    # 원격 호스트 호출을 이 PC에서 실행하는 Receive-Job은 쓰지 않는다. 연결이 끊긴 작업도 끝난 것으로 본다
+    assert "Receive-Job" not in text
+    assert "$hqFinished = @('Completed', 'Failed', 'Stopped', 'Disconnected')" in text

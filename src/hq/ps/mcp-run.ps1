@@ -9,8 +9,9 @@
 # 스크립트는 PowerShell에 붙여 넣은 것과 같은 뜻으로 돈다: 문장 하나가 실패하면 그 오류를 남기고 다음 문장으로 간다
 # (상태 OK). 스크립트 전체가 오류로 끝나야(throw, $ErrorActionPreference = 'Stop') 2다.
 #
-# 종료 코드: 0 끝남, 1 세션이 열려 있지 않음(스크립트를 보내지 않음), 2 스크립트 오류, 10~13 세션 만들기 실패
-# (부트스트랩의 Get-HqExitCode, 그 밖은 1), 14 비밀번호를 읽지 못함, 20 실행 중 세션이 끊김, 21 시간 한도, 22 취소.
+# 종료 코드: 0 끝남, 1 세션이 열려 있지 않음(스크립트를 보내지 않음), 2 스크립트 오류(입력을 기다려 멈춘 것 포함),
+# 10~13 세션 만들기 실패(부트스트랩의 Get-HqExitCode, 그 밖은 1), 14 비밀번호를 읽지 못함, 20 실행 중 세션이 끊김,
+# 21 시간 한도, 22 취소.
 # 잡지 않은 오류는 로더가 70으로 끝낸다. [Environment]::Exit는 finally를 건너뛰므로 세션을 연 뒤에는 Exit-HqRun으로만
 # 끝낸다(세션을 지우고 쓰기를 비운 뒤 끝낸다).
 #
@@ -40,6 +41,10 @@ function Write-HqStreams {
     [void]$hqChild.Progress.ReadAll()
     [void]$hqChild.Verbose.ReadAll()
     [void]$hqChild.Debug.ReadAll()
+    # 작업 안쪽 모음(Results)에 쌓인 같은 기록의 사본도 버린다. 찾지 못했거나 읽다 실패하면 그냥 넘어간다
+    if ($null -ne $hqResults) {
+        try { [void]$hqResults.ReadAll() } catch { }
+    }
 }
 
 function Exit-HqRun([int]$code) {
@@ -87,14 +92,30 @@ if ($null -eq $session -or "$($session.State)" -ne 'Opened') {
 
 try {
     # 5. 스크립트는 글자로 보내 서버에서 스크립트 블록으로 만든다. 이 PC에서 만들면 스크립트의 using 변수가 이
-    # 템플릿의 변수($cred 등)를 읽어 서버로 가져간다(스펙 8.2). -Session이 빠지면 이 PC에서 실행된다
-    $hqJob = Invoke-Command -Session $session -AsJob -ArgumentList $p.script -ScriptBlock { param($t) & ([scriptblock]::Create($t)) | Out-String -Stream -Width 200 }
+    # 템플릿의 변수($cred 등)를 읽어 서버로 가져간다(스펙 8.2). -Session이 빠지면 이 PC에서 실행된다.
+    # 블록에 try를 두는 까닭: 원격 실행 명령은 먼저 블록을 명령 개체로 바꿔 보는데, 그때 블록의 식을 이 PC에서 계산한다.
+    # & ([scriptblock]::Create($t))처럼 한 식이면 스크립트가 이 PC에서 파싱된다(문법 오류, using module의 경로 조회).
+    # try가 든 블록은 바꾸지 못하므로 글자 그대로 서버로 가고, 스크립트는 서버에서만 파싱된다. try는 Create만 감싸므로
+    # 스크립트의 문장 하나가 실패해도 다음 문장으로 간다(2026-11-11 측정)
+    $hqJob = Invoke-Command -Session $session -AsJob -ArgumentList $p.script -ScriptBlock { param($t) try { $hqScript = [scriptblock]::Create($t) } catch { throw }; & $hqScript | Out-String -Stream -Width 200 }
     $hqChild = $hqJob.ChildJobs[0]
+    # 작업은 모든 기록을 공개되지 않은 Results 모음에도 쌓는다. 비우지 않으면 메모리가 출력 크기만큼 는다(Write-HqStreams가
+    # 비운다). 기록을 받아 오는 명령은 쓰지 않는다: 쌓인 원격 호스트 호출을 이 PC에서 실행한다
+    $hqResults = $null
+    try {
+        $hqResults = [System.Management.Automation.Job].GetProperty(
+            'Results', [Reflection.BindingFlags]'Instance, NonPublic').GetValue($hqChild)
+    } catch { }
 
-    # 6. 끝날 때까지 0.2초마다 기록을 옮긴다. 취소 파일이 생겼거나 시간 한도를 넘으면 작업을 멈춘다
-    $hqFinished = @('Completed', 'Failed', 'Stopped')
+    # 6. 끝날 때까지 0.2초마다 기록을 옮긴다. 취소 파일이 생겼거나 시간 한도를 넘으면 작업을 멈춘다. 연결이 끊긴
+    # 작업(Disconnected)도 끝난 것으로 본다. 입력을 기다리는 작업(Blocked)은 답할 수 없으므로 곧바로 멈춘다(스펙 8.3)
+    $hqFinished = @('Completed', 'Failed', 'Stopped', 'Disconnected')
     while ($hqFinished -notcontains "$($hqChild.JobStateInfo.State)") {
         if ([IO.File]::Exists($p.cancel_path)) { Stop-HqRun 22 }
+        if ("$($hqChild.JobStateInfo.State)" -eq 'Blocked') {
+            [Console]::Error.WriteLine('스크립트가 입력을 기다려 멈췄습니다(확인 질문, Read-Host 등). 원격 실행에서는 답할 수 없습니다.')
+            Stop-HqRun 2
+        }
         if ($hqClock.Elapsed.TotalSeconds -ge $p.timeout_seconds) { Stop-HqRun 21 }
         Start-Sleep -Milliseconds 200
         Write-HqStreams

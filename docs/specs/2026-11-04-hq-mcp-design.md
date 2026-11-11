@@ -264,7 +264,7 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 - 서버마다 `powershell.exe -NoLogo -NoProfile -NonInteractive`를 하나 띄운다. 세션은 호출마다 새로 만들고 끝나면 지운다.
 - 스크립트 템플릿은 `src/hq/ps/`에 새로 둔다. 접속 방식은 부트스트랩과 같다: `Get-Content`로 비밀번호 파일을 읽어 `ConvertTo-SecureString`으로 풀고, `New-PSSession -Authentication Negotiate`로 연다. Python은 비밀번호를 풀지 않는다.
 - 값은 ASCII JSON(`ps_json_literal`과 같은 규칙)으로 표준 입력에 넘긴다. 명령줄에 스크립트를 넣지 않는다. `-EncodedCommand`는 명령줄 길이 한도에 걸리고 한글은 더 빨리 찬다.
-- **스크립트는 글자로 서버에 보내 서버에서 스크립트 블록으로 만든다.** 이 PC에서 `[scriptblock]::Create`로 만들어 `Invoke-Command`에 넘기지 않는다. 그렇게 하면 스크립트 안의 `$using:x`가 이 PC 템플릿의 변수를 읽어 서버로 가져간다. 2026-11-10 이 PC 안의 세션으로 시험했더니 `($using:cred).GetNetworkCredential().Password`가 템플릿의 자격 증명에서 시험용 비밀번호를 평문으로 꺼내 결과로 돌려줬다. 글자를 인자로 넘겨 서버에서 만들면(`{ param($t) & ([scriptblock]::Create($t)) }`) 같은 스크립트가 오류로 끝났다. `run_script`는 조회 검사를 거치지 않으므로 이 규칙이 유일한 장치다. 이 PC에서 파싱하지 않으므로 7.1의 경로 조회도 생기지 않는다.
+- **스크립트는 글자로 서버에 보내 서버에서 스크립트 블록으로 만든다.** 이 PC에서 `[scriptblock]::Create`로 만들어 `Invoke-Command`에 넘기지 않는다. 그렇게 하면 스크립트 안의 `$using:x`가 이 PC 템플릿의 변수를 읽어 서버로 가져간다. 2026-11-10 이 PC 안의 세션으로 시험했더니 `($using:cred).GetNetworkCredential().Password`가 템플릿의 자격 증명에서 시험용 비밀번호를 평문으로 꺼내 결과로 돌려줬다. 글자를 인자로 넘겨 서버에서 만들면 같은 스크립트가 비밀번호를 읽지 못하고 그 문장이 오류로 끝났다. `run_script`는 조회 검사를 거치지 않으므로 이 규칙이 유일한 장치다. 서버로 보내는 블록은 `{ param($t) try { $s = [scriptblock]::Create($t) } catch { throw }; & $s }` 모양으로 쓴다. `{ param($t) & ([scriptblock]::Create($t)) }`처럼 한 식으로 쓰면 `Invoke-Command`가 블록을 명령 개체로 바꿔 보려고 `[scriptblock]::Create($t)`를 이 PC에서 계산해, 스크립트가 이 PC에서 파싱된다(2026-11-11 이 PC 안의 세션으로 측정. 문법 오류와 `using module`의 경로 조회가 이 PC에서 났다). `try`가 든 블록은 그렇게 바꾸지 못해 글자 그대로 서버로 간다(같은 날 측정). 그래서 이 PC에서 파싱하지 않고, 7.1의 경로 조회도 생기지 않는다. 스크립트의 문장 하나가 실패해도 PowerShell에 붙여 넣었을 때처럼 다음 문장으로 넘어가고, 그때 상태는 `OK`이며 오류는 `errors`에 있다.
 - `FromBase64String`을 쓰지 않는다. AhnLab V3가 `Invoke-Command`와 함께 든 명령을 막는다(기준 문서 참고).
 - 오류 분류는 부트스트랩의 `Get-HqExitCode`와 같은 판정을 쓴다. 규칙을 두 벌로 만들지 않는다.
 - 12와 TrustedHosts 재확인 처리(계정 오류로 바꾸기)는 `Bridge._on_exit`의 규칙을 따른다.
@@ -275,7 +275,8 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 
 - 정해진 시간이 지나면 PowerShell 안에서 먼저 정리한다: 작업을 멈추고 세션을 지운다. 그래도 10초 안에 끝나지 않으면 프로세스 트리를 강제로 끝낸다.
 - 강제로 끝내면 서버 쪽 세션과 스크립트가 유휴 시간까지 남을 수 있다. 결과의 `status`는 `TIMEOUT`이고 "서버에서 계속 돌 수 있음"을 함께 알린다.
-- Claude Code의 취소 요청도 같은 절차로 처리한다. Claude Code를 끄면 Windows에서는 표준 입력을 닫고 300밀리초 뒤 프로세스 트리를 끝내므로 정리하지 못할 수 있다.
+- Claude Code의 취소 요청도 같은 절차로 처리한다. 취소 파일이 생긴 뒤 10초 안에 끝나지 않으면 프로세스 트리를 강제로 끝낸다. Claude Code를 끄면 Windows에서는 표준 입력을 닫고 300밀리초 뒤 프로세스 트리를 끝내므로 정리하지 못할 수 있다.
+- 스크립트가 입력을 기다리면(확인 질문, `Read-Host`) 답하지 않고 멈추며, 상태는 `SCRIPT_ERROR`다. 원격 실행에서는 답할 사람이 없어 시간 한도까지 기다리기만 하기 때문이다.
 
 ## 9. 결과
 

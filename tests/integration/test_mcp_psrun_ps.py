@@ -108,6 +108,29 @@ def test_a_template_that_never_reads_its_input_is_still_ended_by_the_timeout(tmp
     assert results[0].killed
 
 
+@pytest.mark.usefixtures("started")
+def test_a_stop_file_ends_the_run_after_the_grace(tmp_path):
+    # 템플릿은 어떤 파일도 보지 않는다. stop_path가 생긴 뒤 stop_grace초가 지나면 psrun이 트리를 끝낸다
+    stop = tmp_path / "stop"
+    timer = threading.Timer(1, stop.touch)
+    timer.start()
+    began = time.monotonic()
+    try:
+        result = run_ps_template(
+            template(tmp_path, READ + "Start-Sleep 60\n"), {}, timeout=30, stop_path=stop, stop_grace=2
+        )
+    finally:
+        timer.cancel()
+    assert result.killed and result.code is None and time.monotonic() - began < 10
+
+
+@pytest.mark.usefixtures("started")
+def test_a_stop_file_that_never_appears_changes_nothing(tmp_path):
+    began = time.monotonic()
+    result = run_ps_template(template(tmp_path, READ + "Start-Sleep 60\n"), {}, timeout=4, stop_path=tmp_path / "stop")
+    assert result.killed and 4 <= time.monotonic() - began < 15
+
+
 def test_powershells_own_records_are_removed_and_the_lines_around_them_kept(tmp_path):
     # [Environment]::Exit 없이 끝나야 PowerShell이 #< CLIXML 줄 뒤에 <Objs> 덩어리까지 쓴다
     body = (
