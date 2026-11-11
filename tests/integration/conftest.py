@@ -1,10 +1,14 @@
-"""통합 테스트 공통 준비: 시험이 띄우는 셸(ConPTY, powershell.exe)이 사용자의 입력 기록에 줄을 남기지 않게 한다."""
+"""통합 테스트 공통 준비: 시험이 띄우는 셸(ConPTY, powershell.exe)이 사용자의 입력 기록에 줄을 남기지 않게 한다.
+서버 역할을 하는 이 PC의 powershell.exe(local_server)도 여기서 띄운다."""
 
+import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from ps import run_ps
+from pipesession import wait_for_host_pipe
+from ps import POWERSHELL, run_ps
 
 
 @dataclass(frozen=True)
@@ -52,3 +56,22 @@ def temp_appdata(tmp_path_factory, monkeypatch, normal_shell) -> Path:
     monkeypatch.setenv("APPDATA", str(appdata))
     monkeypatch.setenv("PSModulePath", normal_shell.module_path)
     return appdata
+
+
+@pytest.fixture
+def local_server(tmp_path, monkeypatch):
+    """서버 역할을 하는 이 PC의 powershell.exe. 시험이 이 프로세스에 원격 세션을 연다(pipesession.pipe_session)."""
+    server = subprocess.Popen(
+        [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep 120"],
+        env={**os.environ, "HQ_WHO": "server", "HQ_DIR": str(tmp_path)},
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        wait_for_host_pipe(server.pid)
+        monkeypatch.setenv("HQ_WHO", "client")
+        monkeypatch.setenv("HQ_DIR", str(tmp_path))
+        monkeypatch.setenv("HQ_SERVER_PID", str(server.pid))
+        yield server
+    finally:
+        server.kill()
+        server.wait()

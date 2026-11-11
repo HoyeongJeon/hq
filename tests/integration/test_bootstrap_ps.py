@@ -1,5 +1,4 @@
 import functools
-import os
 import re
 import subprocess
 import threading
@@ -7,7 +6,8 @@ import time
 from pathlib import Path
 
 import pytest
-from ps import POWERSHELL, parse_errors, run_ps
+from pipesession import pipe_session
+from ps import parse_errors, run_ps
 from ptyrun import run_pty
 
 from hq import bootstrap
@@ -434,17 +434,8 @@ def test_a_failed_tab_binding_prints_one_line_and_the_script_goes_on(needs_accep
 # 탭에서 실행되는 것은 부트스트랩의 실제 부분(prelude, tab_binding, session_entry)이고, 시험이 바꾸는 것은
 # New-PSSession 자리(세션 만들기)와 별명 프롬프트 자리(서버 쪽 prompt)뿐이다.
 # 미리 친 줄은 $env:HQ_WHO 이름의 파일을 만든다. 탭에서는 client, 서버에서는 server이므로 어디서 실행됐는지 남는다.
+# 세션 열기(pipesession.pipe_session)와 서버 역할 프로세스(local_server 픽스처)는 MCP 실행기 시험과 함께 쓴다.
 
-# 이름 있는 파이프 런스페이스를 PSSession으로 감싼다(공개 생성자가 없다). Enter-PSSession -Session이 받는 모양이다.
-_PIPE_SESSION = (
-    "$ci = New-Object System.Management.Automation.Runspaces.NamedPipeConnectionInfo([int]$env:HQ_SERVER_PID)\n"
-    "$rs = [runspacefactory]::CreateRunspace($ci, $Host, "
-    "[System.Management.Automation.Runspaces.TypeTable]::LoadDefaultTypeFiles())\n"
-    "$rs.Open()\n"
-    "$new = [System.Management.Automation.Runspaces.PSSession].GetConstructor("
-    "[Reflection.BindingFlags]'Instance, NonPublic', $null, [type[]]@($rs.GetType()), $null)\n"
-    "$global:__hq_session = $new.Invoke(@($rs))\n"
-)
 # 서버의 원격 prompt가 서버 프로세스를 끝낸다. 그래서 서버는 탭이 원격 프롬프트를 그리는 도중에 죽는다.
 # PowerShell이 다른 스레드에서 탭을 이 PC의 런스페이스로 되돌리는 순간이 매번 그 도중에 온다(spec 7.3).
 _DIES_IN_PROMPT = (
@@ -459,35 +450,6 @@ _MARKS_PROMPT = (
 TYPED_HERE_OR_THERE = 'New-Item -ItemType File -Path (Join-Path $env:HQ_DIR "ran-in-$env:HQ_WHO.txt") | Out-Null\r'
 # 고치기 전 부트스트랩의 들어가기(마지막 줄 하나). 대조군이 쓴다.
 _PLAIN_ENTRY = "Enter-PSSession -Session $global:__hq_session\n"
-
-
-def _wait_for_host_pipe(pid: int, timeout: float = 10.0) -> None:
-    """PowerShell 프로세스는 시작하면 \\\\.\\pipe\\PSHost.<시각>.<pid>.DefaultAppDomain.<이름>을 연다."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if any(f".{pid}.DefaultAppDomain." in name for name in os.listdir("\\\\.\\pipe\\")):
-            return
-        time.sleep(0.05)
-    raise TimeoutError(f"서버 역할 PowerShell({pid})의 파이프가 열리지 않았습니다")
-
-
-@pytest.fixture
-def local_server(tmp_path, monkeypatch):
-    """서버 역할을 하는 이 PC의 powershell.exe. 탭이 이 프로세스에 원격 세션을 연다."""
-    server = subprocess.Popen(
-        [POWERSHELL, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep 120"],
-        env={**os.environ, "HQ_WHO": "server", "HQ_DIR": str(tmp_path)},
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    try:
-        _wait_for_host_pipe(server.pid)
-        monkeypatch.setenv("HQ_WHO", "client")
-        monkeypatch.setenv("HQ_DIR", str(tmp_path))
-        monkeypatch.setenv("HQ_SERVER_PID", str(server.pid))
-        yield server
-    finally:
-        server.kill()
-        server.wait()
 
 
 def _module_path_with_psreadline_2_0(module_path: str) -> str:
@@ -525,7 +487,7 @@ def _tab_into_local_server(readline: str, server_prompt: str, *, before: str = "
         + "[IO.File]::WriteAllText((Join-Path $env:HQ_DIR 'psreadline.txt'), \"$((Get-Module PSReadLine).Version)\")\n"
         + "$ErrorActionPreference = 'Stop'\n"
         + before
-        + _PIPE_SESSION
+        + pipe_session()
         + server_prompt
         + (bootstrap.tab_binding() if readline else "")
         + (bootstrap.session_entry() if entry is None else entry)

@@ -24,7 +24,8 @@ function global:prompt {
 # 원문에 표시가 통째로 있으면 hq가 그 메시지를 신호로 착각한다.
 if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') { $Host.UI.RawUI.WindowTitle = 'hq:safety' + '-ready' }
 
-# 세션 만들기 실패를 hq 종료 코드로 바꾼다.
+#region exitcode
+# 세션 만들기 실패를 hq 종료 코드로 바꾼다. MCP 실행 템플릿(mcp-run.ps1)도 이 구역을 읽어 같은 분류를 쓴다.
 # 10 로그인 거부, 11 응답 없음, 12 TrustedHosts 없음, 13 동시 세션 한도, 1 그 밖
 # 한국어 Windows는 메시지를 한국어로 주므로 FullyQualifiedErrorId의 쉼표 앞부분으로 정한다(V3 실서버 표본,
 # docs/verification.md). 1312는 Negotiate 인증으로 TrustedHosts에 없는 서버에 접속할 때 나온다.
@@ -40,6 +41,7 @@ function Get-HqExitCode {
     if ($message -match 'TrustedHosts') { return 12 }
     return 1
 }
+#endregion exitcode
 
 #region main
 $ErrorActionPreference = 'Stop'

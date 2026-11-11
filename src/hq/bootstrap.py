@@ -18,6 +18,10 @@ TAB_REGION_END = "#endregion tab"
 # 원격 세션에 들어가는 부분(Task D-2). 테스트가 이 부분만 떼어 이 PC의 다른 PowerShell에 연 세션으로 돌린다.
 ENTRY_REGION_START = "#region enter"
 ENTRY_REGION_END = "#endregion enter"
+# 세션 만들기 실패를 종료 코드로 바꾸는 함수(Get-HqExitCode). MCP 실행 템플릿(mcp-run.ps1)이 이 구역만 읽어 같은
+# 분류를 쓴다.
+EXITCODE_REGION_START = "#region exitcode"
+EXITCODE_REGION_END = "#endregion exitcode"
 _PLACEHOLDER = "__HQ_PARAMS__"
 # json.dumps(ensure_ascii=True)가 만든 문자열 하나("..."). 안에는 출력 가능한 ASCII와 \ 이스케이프만 있다.
 _JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
@@ -106,6 +110,11 @@ def tab_binding() -> str:
 def session_entry() -> str:
     """원격 세션에 들어가는 부분만(#region enter ~ #endregion enter). 테스트가 이 PC 안의 세션으로 돌린다."""
     return _region(ENTRY_REGION_START, ENTRY_REGION_END)
+
+
+def exit_code_function() -> str:
+    """오류 분류 함수 부분만(#region exitcode ~ #endregion exitcode). mcp-run.ps1도 이 구역을 읽는다."""
+    return _region(EXITCODE_REGION_START, EXITCODE_REGION_END)
 
 
 def build_script(params: BootstrapParams) -> str:

@@ -143,6 +143,11 @@ def test_prelude_holds_the_safety_net_and_nothing_that_connects():
     assert safety_net.index("$code = 1") < safety_net.index("try {")
 
 
+def test_the_exit_code_function_is_one_marked_region():
+    text = bootstrap.exit_code_function()
+    assert text.count("function Get-HqExitCode") == 1 and "function global:prompt" not in text
+
+
 def test_template_has_one_placeholder_and_the_safety_net_first():
     text = bootstrap.template_text()
     assert text.count("__HQ_PARAMS__") == 1
