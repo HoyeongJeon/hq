@@ -138,6 +138,8 @@ def test_the_rules_file_closes_the_gaps_of_the_expression_review():
     # 해시테이블이 MachineName을 가진 개체로 바뀌어 묶인다
     assert "InputObject" in rules["remote_param_aliases"]["Get-Service"]
     assert "InputObject" in rules["remote_param_aliases"]["Get-Process"]
+    # 문서상 WS-Man 세션에서만 쓰이고, 이름 검사는 URI의 %5F 같은 이스케이프를 풀지 않는다
+    assert "ResourceUri" in rules["remote_param_aliases"]["Get-CimInstance"]
     # 새 세션에 없어 변수 목록에 잡히지 않는 환경 설정 변수. 실제 조회에 흔한 지역 이름(Event 등)은 넣지 않는다
     assert {
         "LogCommandHealthEvent", "LogCommandLifecycleEvent", "LogEngineHealthEvent", "LogEngineLifecycleEvent",

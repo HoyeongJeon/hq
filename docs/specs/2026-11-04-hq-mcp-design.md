@@ -207,7 +207,7 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 - 다른 컴퓨터로 가는 매개변수는 거절한다. 대상은 명령별로 실제 매개변수 정보에서 뽑는다: 이름이 `ComputerName`, `CimSession`, `Session`, `PSSession`, `Credential`인 매개변수와 그 별칭 전부다. 고정 목록으로는 빠진다. 2026-11-10 이 PC에서 허용 명령 66개를 훑었더니 `Get-CimInstance -ServerName`, `Get-HotFix -IPAddress`와 `-__Server`, `Get-NetIPConfiguration -PSComputerName`이 `ComputerName`이나 `CimSession`의 별칭이었다. 같은 이름이 다른 명령에서는 무해한 거르기 매개변수이므로(`Get-NetIPAddress -IPAddress`) 명령별로 판단한다. PowerShell은 이름과 별칭 모두 앞부분 줄임을 받으므로(`-PSP`가 `-PSPath`로 통했다) `-Comp`, `-Server` 같은 줄임도 거절한다. 판단이 모호하면 거절한다. 서버의 명령 버전에만 있는 별칭까지 보장하지는 않는다. 매개변수 이름에 영문, 숫자, 밑줄이 아닌 글자가 있으면 거절한다. PowerShell은 매개변수 이름을 비교할 때 소프트 하이픈 같은 보이지 않는 글자를 무시하므로, 그런 글자를 끼운 이름도 원래 매개변수로 묶인다(2026-11-11 이 PC에서 측정). 원격 매개변수가 파이프라인 입력으로도 묶이는 명령(`Get-CimInstance`, `Get-HotFix`, `Get-Service`, `Get-Process`, `Get-NetIPConfiguration` 등. 명령 정보에서 뽑는다)은 파이프라인의 맨 앞에만 쓸 수 있다. 앞 명령이 낸 개체의 `ServerName` 같은 속성이 주소로 묶이기 때문이다. `Get-Service`와 `Get-Process`의 `-InputObject`도 거절한다. 해시테이블이 `MachineName`을 가진 개체로 바뀌어 묶인다(2026-11-11 이 PC에서 측정).
 - `ForEach-Object`와 `%`는 스크립트 블록 형태만 받는다. `% Delete`, `-MemberName Delete`는 메서드 호출이므로 거절한다.
 - 스플래팅(`@p`)은 거절한다.
-- 명령 인자의 글자가 `\\`나 `//`로 시작하면 거절한다. `::`를 포함한 인자는 `Registry::`로 시작할 때만 받는다. UNC 경로와 `FileSystem::\\z\c$\x` 같은 공급자 표기를 막고, 사용자별 자동 실행 조회에 흔한 `Registry::HKEY_USERS\...`는 남긴다. `-Path:\\z\x`처럼 매개변수에 붙은 값도 같다. 변수가 섞인 문자열(`"\\$h\c$"`)도 글자 부분이 `\\`로 시작하면 거절한다. 인자 안의 괄호, 배열, `$(...)`에 적힌 문자열도 같다. 다듬기 명령에 준 스크립트 블록 안의 문자열은 인자가 아니라 코드이므로 보지 않고, 그 안에서 부르는 명령의 인자는 본다. 다만 그 다듬기 명령이 다른 명령의 인자 안에 있으면 블록 안의 문자열도 본다(`Get-Content (1 | ForEach-Object { '\\z\c$\x' })`).
+- 명령 인자의 글자가 `\\`나 `//`로 시작하면 거절한다. `::`를 포함한 인자는 `Registry::`로 시작할 때만 받는다. UNC 경로와 `FileSystem::\\z\c$\x` 같은 공급자 표기를 막고, 사용자별 자동 실행 조회에 흔한 `Registry::HKEY_USERS\...`는 남긴다. `-Path:\\z\x`처럼 매개변수에 붙은 값도 같다. 변수가 섞인 문자열(`"\\$h\c$"`)도 글자 부분이 `\\`로 시작하면 거절한다. 변수나 `$(...)`가 맨 앞에 있으면 그 뒤에 처음 나오는 글자 부분으로 판단한다(`"$null\\z\c$\x"`도 거절한다). `::`는 글자 부분에서만 찾고, `$(...)` 안의 코드는 그 코드의 규칙으로 본다(`"$([math]::Round($x, 1)) GB"`는 받는다). 인자 안의 괄호, 배열, `$(...)`에 적힌 문자열도 같다. 다듬기 명령에 준 스크립트 블록 안의 문자열은 인자가 아니라 코드이므로 보지 않고, 그 안에서 부르는 명령의 인자는 본다. 다만 그 다듬기 명령이 다듬기 명령이 아닌 명령의 인자 안에 있으면 블록 안의 문자열도 본다(`Get-Content (1 | ForEach-Object { '\\z\c$\x' })`).
 - `function:`, `alias:`, `variable:`로 시작하는 인자는 거절한다. 함수 본문을 스크립트 블록으로 꺼내는 길이다.
 - 스크립트 블록은 다듬기 명령 열 개(`Where-Object`, `ForEach-Object`, `Select-Object`, `Sort-Object`, `Group-Object`, `Measure-Object`, `Compare-Object`, `Format-Table`, `Format-List`, `Format-Wide`)의 인자, 그 인자 안의 배열 항목과 해시테이블 값(계산 속성), `switch`의 조건 자리에만 적을 수 있다. 다른 자리에 적으면 거절한다. PowerShell은 다른 명령의 매개변수에 온 블록을 파이프라인 입력마다 실행해 그 결과를 매개변수 값으로 쓰고(`'x' | Get-Content -Path { '\\z\c$\x' }`), 블록이 괄호, 배열, 변수를 거쳐 와도 같다(2026-11-11 이 PC에서 `Get-Date -Date`로 측정). 열 개는 파이프라인 입력을 입력 개체로만 받는 명령이고, 명령 정보로 확인한다.
 - `switch -File`은 거절한다. 명령 인자가 아니어서 위의 경로 검사를 거치지 않는다.
@@ -219,7 +219,7 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 - 인스턴스 메서드: `ToString ToXml Trim TrimStart TrimEnd PadLeft PadRight Split Substring ToLower ToUpper Contains StartsWith EndsWith AddDays AddHours AddMinutes AddSeconds IsMatch Match Matches`.
 - **인스턴스 목록에 넣으면 안 되는 이름:** `Format`(`Win32_Volume.Format`은 볼륨을 포맷한다), `Replace`(`FileInfo.Replace`는 파일을 덮어쓴다), `GetType`(`[int].Assembly.GetType('System.IO.File')`로 아무 타입에나 닿는다), `IndexOf`(`X509Certificate2Collection.IndexOf`는 문자열 인자를 인증서 파일 경로로 읽는다. 2026-11-11 측정). 글자 처리는 `-f`와 `-replace`로 한다.
 - 타입은 허용 목록만 받는다: `int long double decimal bool string char datetime timespan array hashtable ordered pscustomobject regex math xml`.
-- 해시테이블의 키는 글자 그대로 적은 것만 받고, `PSTypeName` 키는 거절한다. 그 키는 개체에 다른 타입의 이름을 붙여, 속성을 읽을 때 그 타입에 딸린 코드(파일 버전 읽기, 이름 풀이 등)가 돌게 한다(2026-11-11 이 PC에서 측정).
+- 해시테이블의 키는 글자 그대로 적은 것만 받고, `PSTypeName` 키는 거절한다. 그 키는 개체에 다른 타입의 이름을 붙여, 속성을 읽을 때 그 타입에 딸린 코드(파일 버전 읽기, 이름 풀이 등)가 돌게 한다(2026-11-11 이 PC에서 측정). `[pscustomobject]`는 해시테이블을 글자로 적은 것 바로 앞에만 쓸 수 있다. `$Matches`처럼 실행 중에 만들어진 표를 바꾸면 이름 붙은 그룹이 같은 키 노릇을 한다(2026-11-11 이 PC에서 측정).
 - 정적 메서드는 글자로 적은 타입에서 다음만 받는다: `[string]::Format Join IsNullOrEmpty IsNullOrWhiteSpace`, `[math]::Round Floor Ceiling Abs Max Min`, `[regex]::IsMatch Match Matches Replace`. `$t::Round(1)`처럼 변수로 정한 타입은 거절한다. 정적 속성(`[datetime]::Now`, `[math]::PI`)도 글자로 적은 허용 타입에서만 받는다.
 - `-as`는 오른쪽이 허용 타입을 글자로 적은 것(`$x -as [int]`)일 때만 받는다. 오른쪽이 문자열이나 변수면 PowerShell이 아무 타입의 생성자나 부른다. `'C:\x' -as 'System.IO.StreamWriter'`는 파일을 0바이트로 만든다(2026-11-10 임시 파일로 측정). `[int].Assembly.DefinedTypes`에서 고른 타입도 같았다.
 - 메서드와 타입 목록도 명령 목록처럼 처음 목록이다 **[판단]**. 같은 절차로 늘리고, 목록을 넘는 스크립트는 `run_script`로 실행한다. 미리 모아 둔 실제 스크립트가 없으므로, 쓰면서 10장의 거절 기록을 보고 늘린다.
@@ -526,6 +526,8 @@ $LogCommandLifecycleEvent = $true; Get-Date
 [pscustomobject]@{ PSTypeName = 'System.IO.FileInfo'; FullName = 'C:\x' }
 (Get-Item Cert:\LocalMachine\My).Certificates.IndexOf('\\z\c$\x.cer')
 'x' | Get-Content -Path (({ 'C:\x' }, 1)[0])
+Get-Content "$null\\z\c$\x"
+$null = 'System.IO.FileInfo|\\z\c$\x.dll' -match '(?<PSTypeName>[^|]+)\|(?<FullName>.+)'; ([pscustomobject]$Matches).VersionInfo
 ```
 
 - 파서를 부르지 않고 거절해야 하는 표. 검사 프로세스가 뜨지 않음을 확인한다.

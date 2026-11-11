@@ -162,25 +162,80 @@ function Test-HqVariableValue($value) {
     return $name.IndexOf(':', [StringComparison]::Ordinal) -lt 0 -and -not $hqProtectedVariables.Contains($name)
 }
 
-function Test-HqBlockedPath([string]$value) {
-    # \\, //로 시작하는 UNC 경로. PowerShell은 /도 경로 구분자로 받으므로 섞어 쓴 \/, /\도 같다
-    if ([regex]::IsMatch($value, '\A[\\/]{2}')) { return $true }
-    # 공급자 표기(FileSystem::\\z\x 등). 사용자별 자동 실행 조회에 흔한 Registry::만 받는다
-    if ($value.IndexOf('::', [StringComparison]::Ordinal) -ge 0 -and
-        -not $value.StartsWith('Registry::', [StringComparison]::OrdinalIgnoreCase)) { return $true }
-    # 함수 본문을 스크립트 블록으로 꺼내는 드라이브(function:, alias:, variable:)
-    foreach ($prefix in $hqPathPrefixes) {
-        if ($value.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+function Test-HqBlockedPath([string[]]$pieces) {
+    # 문자열의 글자 부분(상수는 값 하나, 변수가 섞인 문자열은 Get-HqLiteralPieces의 조각들)으로 판단한다.
+    # UNC와 막힌 앞부분은 앞에 펼침만 있는 첫 조각(비지 않은 첫 조각)에서 본다. 빈 펼침($null, $())은 아무것도 내지
+    # 않으므로 그 뒤의 글자가 경로의 시작이다
+    $first = $null
+    foreach ($piece in $pieces) {
+        if ($piece.Length -gt 0) {
+            $first = $piece
+            break
+        }
+    }
+    if ($null -ne $first) {
+        # \\, //로 시작하는 UNC 경로. PowerShell은 /도 경로 구분자로 받으므로 섞어 쓴 \/, /\도 같다
+        if ([regex]::IsMatch($first, '\A[\\/]{2}')) { return $true }
+        # 함수 본문을 스크립트 블록으로 꺼내는 드라이브(function:, alias:, variable:)
+        foreach ($prefix in $hqPathPrefixes) {
+            if ($first.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        }
+    }
+    # 공급자 표기(FileSystem::\\z\x 등)는 어느 글자 조각에서든 찾는다. 문자열이 맨 앞에서 글자로 Registry::로
+    # 시작하면(사용자별 자동 실행 조회) 받는다
+    if (-not $pieces[0].StartsWith('Registry::', [StringComparison]::OrdinalIgnoreCase)) {
+        foreach ($piece in $pieces) {
+            if ($piece.IndexOf('::', [StringComparison]::Ordinal) -ge 0) { return $true }
+        }
     }
     return $false
 }
 
+function Get-HqLiteralPieces($string) {
+    # 변수가 섞인 문자열(큰따옴표, 펼치는 here-string, 펼침이 든 맨 글자)의 글자 부분: 안쪽 식(NestedExpressions) 밖의
+    # 원문을 차례로, 여닫는 따옴표와 here-string의 머리와 꼬리 줄 없이, 백틱을 모두 지운 것. 첫 조각은 문자열 맨
+    # 앞의 글자다(앞에 식이 있으면 빈 글자). 백틱은 다음 글자를 이스케이프할 뿐이므로 지우면 검사가 엄격해질 뿐이다.
+    # 안쪽 식의 코드는 경로 글자로 읽지 않는다. 그 안의 문자열은 Test-HqPaths가 따로 찾아 본다
+    $text = $string.Extent.Text
+    $base = $string.Extent.StartOffset
+    $begin = 0
+    $end = $text.Length
+    $kind = [System.Management.Automation.Language.StringConstantType]
+    if ($string.StringConstantType -eq $kind::DoubleQuoted) {
+        # 따옴표는 한 글자다(“ ”도 큰따옴표로 받는다)
+        $begin = 1
+        $end = $text.Length - 1
+    } elseif ($string.StringConstantType -eq $kind::DoubleQuotedHereString) {
+        # @" 뒤의 첫 줄바꿈 다음부터, "@ 앞의 마지막 줄바꿈(\r\n이면 \r)까지
+        $begin = $text.IndexOf([char]10) + 1
+        $end = $text.LastIndexOf([char]10)
+        if ($end -gt 0 -and [int]$text[$end - 1] -eq 13) { $end-- }
+        if ($end -lt $begin) { $end = $begin }
+    }
+    $pieces = [System.Collections.Generic.List[string]]::new()
+    $at = $begin
+    foreach ($nested in $string.NestedExpressions) {
+        $from = $nested.Extent.StartOffset - $base
+        $pieces.Add($text.Substring($at, $from - $at).Replace('`', ''))
+        $at = $nested.Extent.EndOffset - $base
+    }
+    $pieces.Add($text.Substring($at, $end - $at).Replace('`', ''))
+    return , $pieces.ToArray()
+}
+
 function Test-HqPathString($string) {
-    # 문자열 하나에 경로 규칙을 쓴다. 보이지 않는 글자를 지운 사본에도 견준다. 이미 본 문자열은 다시 보지 않는다
+    # 문자열 하나에 경로 규칙을 쓴다. 문자열 상수는 값을, 변수가 섞인 문자열은 글자 부분을 본다. 보이지 않는 글자를
+    # 지운 사본에도 견준다. 이미 본 문자열은 다시 보지 않는다
     if (-not $hqPathSeen.Add($string)) { return }
-    if ((Test-HqBlockedPath $string.Value) -or (Test-HqBlockedPath (Get-HqAsciiCopy $string.Value))) {
+    if ($string -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) {
+        $pieces = Get-HqLiteralPieces $string
+    } else {
+        $pieces = [string[]]@($string.Value)
+    }
+    $ascii = [string[]]@(foreach ($piece in $pieces) { Get-HqAsciiCopy $piece })
+    if ((Test-HqBlockedPath $pieces) -or (Test-HqBlockedPath $ascii)) {
         Add-HqReason 'PATH' ('UNC 경로(\\, //), 공급자 표기(::, Registry::만 받음), function:, alias:, variable: ' +
-            '경로는 명령 인자로 쓸 수 없습니다.') $string
+            '경로는 명령 인자로 쓸 수 없습니다. 변수나 $( )가 맨 앞에 있으면 그 뒤의 글자로 판단합니다.') $string
     }
 }
 
@@ -488,6 +543,29 @@ function Test-HqTypeConstraint($constraint) {
     }
 }
 
+function Test-HqPlainTypeIs($typeName, [string]$name) {
+    # 형식 이름(배열 표기는 요소 형식)이 목록의 이름 name과 같다(서수, 대소문자 무시)
+    while ($typeName -is [System.Management.Automation.Language.ArrayTypeName]) { $typeName = $typeName.ElementType }
+    return $typeName -is [System.Management.Automation.Language.TypeName] -and
+        [string]::Equals($typeName.FullName, $name, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-HqConvert($convert) {
+    # [pscustomobject]는 글자로 적은 해시테이블([ordered] 해시테이블 포함) 바로 앞에만 쓴다. 실행 중에 만든 표($Matches
+    # 등)를 바꾸면 이름 붙은 그룹 PSTypeName이 키 노릇을 해 개체에 다른 타입의 이름을 붙인다(2026-11-11 검토자 측정).
+    # 글자로 적은 표의 키는 Test-HqHashtable이 본다. 형식 이름 자체는 자식 TypeConstraintAst의 규칙이 본다
+    if (-not (Test-HqPlainTypeIs $convert.Type.TypeName 'pscustomobject')) { return }
+    $child = $convert.Child
+    if ($child -is [System.Management.Automation.Language.HashtableAst]) { return }
+    if ($child -is [System.Management.Automation.Language.ConvertExpressionAst] -and
+        (Test-HqPlainTypeIs $child.Type.TypeName 'ordered') -and
+        $child.Child -is [System.Management.Automation.Language.HashtableAst]) {
+        return
+    }
+    Add-HqReason 'TYPE' ('[pscustomobject]는 해시테이블을 글자로 적은 것(@{ ... }) 바로 앞에만 쓸 수 있습니다. 변수나 식을 ' +
+        '바꾸면 실행 중에 만든 표의 키가 개체의 타입 이름이 될 수 있습니다.') $convert
+}
+
 function Test-HqAssignable($target) {
     # 넣을 수 있는 자리: 범위와 드라이브 표시가 없고 스플래팅이 아닌 변수로, 이름이 넣을 수 있는 변수 이름인 것.
     # 또는 그런 변수를 감싼 허용 형식의 변환([int]$x = 5). 왼쪽이 여럿이거나 속성, 인덱스면 거짓이다.
@@ -617,13 +695,15 @@ foreach ($hqKind in 'PipelineAst', 'CommandExpressionAst', 'ConstantExpressionAs
     $hqKinds.Add($hqKind, $null)
 }
 # 제어 흐름과 식을 묶는 종류. 안쪽의 명령, 변수, 문자열은 저마다의 종류로 따로 검사된다. 스크립트 블록 안도 바깥과
-# 같은 규칙을 따른다. ConvertExpressionAst의 형식은 자식 TypeConstraintAst의 규칙이 본다
+# 같은 규칙을 따른다
 foreach ($hqKind in 'IfStatementAst', 'WhileStatementAst', 'DoWhileStatementAst', 'DoUntilStatementAst',
     'ForStatementAst', 'TryStatementAst', 'CatchClauseAst', 'ThrowStatementAst', 'ReturnStatementAst',
     'BreakStatementAst', 'ContinueStatementAst', 'ExitStatementAst', 'ParenExpressionAst', 'SubExpressionAst',
-    'ArrayExpressionAst', 'IndexExpressionAst', 'ConvertExpressionAst') {
+    'ArrayExpressionAst', 'IndexExpressionAst') {
     $hqKinds.Add($hqKind, $null)
 }
+# 변환의 형식은 자식 TypeConstraintAst의 규칙이 보고, 여기서는 [pscustomobject]의 자식을 본다
+$hqKinds.Add('ConvertExpressionAst', { param($node) Test-HqConvert $node })
 $hqKinds.Add('HashtableAst', { param($node) Test-HqHashtable $node })
 $hqKinds.Add('ScriptBlockExpressionAst', { param($node) Test-HqBlockPlace $node })
 $hqKinds.Add('StringConstantExpressionAst', { param($node) Test-HqWmiClass $node })

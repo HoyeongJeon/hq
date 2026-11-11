@@ -30,11 +30,11 @@ def codes_by_line(script):
     return verdict.ok, found
 
 
-# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 64줄을 차례로 검사하면 기본 한도 120초를 넘는다
+# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 66줄을 차례로 검사하면 기본 한도 120초를 넘는다
 @pytest.mark.timeout(600)
 def test_every_attack_in_the_spec_is_refused():
     attacks = spec_attacks()
-    assert len(attacks) >= 64 and "Get-Process | Stop-Process" in attacks
+    assert len(attacks) >= 66 and "Get-Process | Stop-Process" in attacks
     for script in attacks:
         verdict = check_query(script)
         assert verdict.ok is False, script
@@ -465,6 +465,83 @@ def test_a_catch_type_is_a_plain_dotted_name():
     # 어셈블리를 적은 catch 타입은 파서가 그 어셈블리를 찾게 한다
     ok, found = codes("try { 1 } catch [T, hqprobe9x] { 2 }")
     assert not ok and "TYPE" in found
+
+
+def test_pscustomobject_is_written_only_in_front_of_a_literal_table():
+    # 실행 중에 만든 표($Matches)를 바꾸면 이름 붙은 그룹 PSTypeName이 키 노릇을 한다(2026-11-11 검토자 측정)
+    rows = "$null = 'System.IO.FileInfo|\\\\z\\c$\\x.dll' -match '(?<PSTypeName>[^|]+)\\|(?<FullName>.+)'"
+    assert_each_line_refused(
+        [
+            (f"{rows}; ([pscustomobject]$Matches).VersionInfo", "TYPE"),
+            (f"{rows}; [pscustomobject]$Matches | Select-Object VersionInfo", "TYPE"),
+            (
+                "switch -Regex ('System.IO.FileInfo|\\\\z\\c$\\x.dll') { '(?<PSTypeName>[^|]+)\\|(?<FullName>.+)' "
+                "{ ([pscustomobject]$Matches).VersionInfo } }",
+                "TYPE",
+            ),
+            (
+                "('System.Management.ManagementObject#root\\cimv2\\Win32_Ping' + 'Status|x.example') -match "
+                "'(?<PSTypeName>[^|]+)\\|(?<Address>.+)'; ([pscustomobject]$Matches).IPV4Address",
+                "TYPE",
+            ),
+        ]
+    )
+
+
+def test_pscustomobject_of_a_variable_or_parentheses_is_refused_as_the_price():
+    assert_each_line_refused([("[pscustomobject]$h", "TYPE"), ("[pscustomobject](@{ a = 1 })", "TYPE")])
+
+
+# 변수가 섞인 문자열은 글자 부분(안쪽 식 밖의 글자, 따옴표 빼고, 백틱 지우고)으로 경로를 본다. 맨 앞의 빈 펼침
+# ($null, $())은 아무것도 내지 않으므로 그 뒤의 글자 부분이 경로의 시작이다
+@pytest.mark.parametrize(
+    "script",
+    [
+        'Get-Content "$null\\\\z\\c$\\x"',
+        'Get-Content "$()\\\\z\\c$\\x"',
+        'Get-Content "${a}//z/c$/x"',
+        'Get-Content "$a$b\\\\z\\c$\\x"',
+        "Get-Content $null\\\\z\\c$\\x",
+        'Get-Content "$null`\\\\z\\c$\\x"',
+        'Get-Content "$null\\`\\z\\c$\\x"',
+        'Get-Content "\\\\$h\\c$"',
+        'Get-Content "$()FileSystem::\\\\z\\c$\\x"',
+        'Get-Content "$()function:\\x"',
+        'Get-Content @"\n$null\\\\z\\c$\\x\n"@',
+        'Get-Content "$null\u00ad\\\\z\\c$\\x"',
+    ],
+)
+def test_a_path_after_empty_expansions_in_a_mixed_string_is_refused(script):
+    ok, found = codes(script)
+    assert not ok and "PATH" in found
+
+
+def test_the_controls_of_the_second_review_pass():
+    # 펼침 안의 코드는 경로 글자로 읽지 않는다. [pscustomobject]는 글자로 적은 표 앞과 -as 오른쪽에 쓸 수 있다
+    script = "\n".join(
+        [
+            'Write-Output "$([math]::Round(1.5, 1)) GB"',
+            "Write-Output \"Total: $([string]::Format('{0:N1}', 1.5))\"",
+            'Get-ChildItem "$env:SystemRoot\\$name\\x"',
+            'Get-ItemProperty "Registry::HKEY_USERS\\$sid\\Software"',
+            'Get-Content "C:\\x\\$a"',
+            "[pscustomobject]@{ Name = 'x' }",
+            "[pscustomobject][ordered]@{ a = 1; b = 2 }",
+            "$x -as [pscustomobject]",
+        ]
+    )
+    verdict = check_query(script)
+    assert (verdict.ok, verdict.reasons) == (True, ())
+
+
+def test_the_resource_uri_of_get_ciminstance_is_a_remote_parameter():
+    # 문서상 WS-Man 세션에서만 쓰인다. 이름 검사는 URI의 %5F를 풀지 않는다
+    assert_each_line_refused(
+        [
+            ("Get-CimInstance -ResourceUri http://x.example/wbem/wscim/1/cim-schema/2/Win32%5FProduct", "PARAM_REMOTE"),
+            ("Get-CimInstance Win32_OperatingSystem -Res x", "PARAM_REMOTE"),
+        ]
+    )
 
 
 def test_the_controls_of_the_expression_review_pass():

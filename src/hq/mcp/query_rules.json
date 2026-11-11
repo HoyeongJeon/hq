@@ -37,7 +37,7 @@
   },
   "remote_params": ["ComputerName", "CN", "CimSession", "Session", "PSSession", "Credential"],
   "remote_param_aliases": {
-    "Get-CimInstance": ["ServerName"],
+    "Get-CimInstance": ["ServerName", "ResourceUri"],
     "Get-HotFix": ["__Server", "IPAddress"],
     "Get-NetIPConfiguration": ["PSComputerName"],
     "Get-Service": ["InputObject"],
