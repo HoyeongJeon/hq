@@ -44,6 +44,11 @@ def test_the_finished_json_never_exceeds_the_budget(output):
     assert row["truncated"] is True and row["output_chars"] == len(output) and output.startswith(row["output"])
 
 
+def test_seconds_are_rounded_to_one_decimal():
+    text = build_result([dataclasses.replace(one("a" * 40_000), seconds=2.0123456789)])
+    assert json.loads(text)["results"][0]["seconds"] == 2.0 and weighted_size(text) <= 30_000
+
+
 def test_hangul_only_output_keeps_at_most_7500_characters():
     assert len(json.loads(build_result([one("가" * 40_000)]))["results"][0]["output"]) <= 7_500
 
@@ -60,13 +65,51 @@ def test_thirty_servers_share_the_budget_and_small_ones_are_not_cut():
     assert min(big) > 0 and max(big) - min(big) <= 1 and all(r["truncated"] for r in rows[10:])
 
 
+def test_an_already_truncated_ascii_result_fills_the_budget_exactly():
+    # 이미 truncated인 행은 false가 true로 바뀌며 한 글자 줄지 않으므로, ASCII 출력은 크기를 정확히 채운다
+    assert weighted_size(build_result([dataclasses.replace(one("a" * 40_000), truncated=True)])) == 30_000
+
+
+def test_small_servers_between_big_ones_are_not_cut_and_the_rest_is_shared():
+    outcomes = [
+        RunOutcome(f"s{i} (10.0.1.{i})", "OK", "x" * (50 if i % 3 == 0 else 5_000), "", 0, False, 1.0)
+        for i in range(30)
+    ]
+    text = build_result(outcomes)
+    rows = json.loads(text)["results"]
+    small = [r for i, r in enumerate(rows) if i % 3 == 0]
+    big = [len(r["output"]) for i, r in enumerate(rows) if i % 3]
+    assert all(len(r["output"]) == 50 and not r["truncated"] for r in small)
+    assert max(big) - min(big) <= 1
+    assert 30_000 - len(big) <= weighted_size(text) <= 30_000  # 작은 서버가 남긴 몫은 큰 서버가 쓴다
+
+
 def test_errors_keep_a_quarter_when_both_overflow():
     row = json.loads(build_result([one("o" * 40_000, "e" * 40_000)]))["results"][0]
     assert 0.2 < len(row["errors"]) / (len(row["errors"]) + len(row["output"])) < 0.3
 
 
+def test_errors_use_what_output_leaves_and_an_errors_cut_is_reported():
+    row = json.loads(build_result([one("o" * 10, "e" * 40_000)]))["results"][0]
+    assert row["output"] == "o" * 10 and len(row["errors"]) > 29_000 and row["truncated"] is True
+
+
+def test_an_outcome_already_truncated_stays_truncated():
+    row = json.loads(build_result([dataclasses.replace(one("짧은 출력"), truncated=True)]))["results"][0]
+    assert row["output"] == "짧은 출력" and row["truncated"] is True
+
+
 def test_control_characters_are_removed_but_newlines_and_tabs_stay():
     assert clean_text("a\x1b[2Jb\r\nc\td\x00\x9b") == "a[2Jb\nc\td"
+
+
+def test_lone_cr_vt_and_ff_are_removed():
+    assert clean_text("a\rb\x0bc\x0cd") == "abcd"
+
+
+def test_tag_characters_and_bidi_overrides_are_removed_but_joiners_stay():
+    # 태그 문자는 보이지 않고, 방향 제어 문자는 글자 순서를 바꿔 보이게 한다. 둘 다 사람 몰래 Claude에게 글을 보낸다
+    assert clean_text("a\U000e0041\U000e007fb\u202ec\u2066d\u2069e\u200d") == "abcde\u200d"
 
 
 def test_a_note_appears_only_when_there_is_one():
@@ -84,11 +127,13 @@ def test_a_budget_smaller_than_the_frame_empties_every_text():
     assert [(r["output"], r["errors"], r["truncated"]) for r in rows] == [("", "", True), ("", "", False)]
 
 
-def test_odd_characters_are_cut_into_valid_json_at_every_size():
+# truncated=True면 틀의 truncated가 바뀌지 않아 남는 한 글자가 없으므로, 자르기가 한 글자만 넘쳐도 걸린다
+@pytest.mark.parametrize("truncated", [False, True])
+def test_odd_characters_are_cut_into_valid_json_at_every_size(truncated):
     # 짝 없는 서로게이트, 한 글자인 이모지, 서로게이트 두 글자(chr로 만든 짝)로 된 이모지, 이스케이프되는 글자,
     # 지울 제어 문자
     piece = "\ud800a😀" + chr(0xD83D) + chr(0xDE00) + '"\\\n\t가\x1b\r\n\udfff'
-    outcome = one(piece * 50, piece * 50)
+    outcome = dataclasses.replace(one(piece * 50, piece * 50), truncated=truncated)
     cleaned = clean_text(piece * 50)
     frame = weighted_size(build_result([dataclasses.replace(outcome, output="", errors="", truncated=True)]))
     last_kept = set()

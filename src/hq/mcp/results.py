@@ -11,12 +11,14 @@ from collections.abc import Sequence
 from hq.mcp.runner import RunOutcome
 
 RESULT_BUDGET = 30_000  # 이 크기면 글자 수는 50,000 아래이고, 한글만 있어도 7,500자다(스펙 9장)
-# 줄바꿈(\x0a)과 탭(\x09)을 뺀 C0, DEL, C1. 침해된 서버의 출력에 터미널 제어 문자가 섞일 수 있다
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# 줄바꿈(\x0a)과 탭(\x09)을 뺀 C0, DEL, C1. 침해된 서버의 출력에 터미널 제어 문자가 섞일 수 있다. 화면에 보이지 않는
+# 유니코드 태그 문자(U+E0000~U+E007F)와 글자 순서를 바꿔 보이게 하는 방향 제어 문자(U+202A~U+202E, U+2066~U+2069)도
+# 지운다. 사용자는 못 보고 Claude만 읽는 글을 심는 데 쓰일 수 있다(스펙 9장)
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\U000e0000-\U000e007f]")
 
 
 def clean_text(text: str) -> str:
-    """\\r\\n을 \\n으로 바꾸고, 줄바꿈과 탭 밖의 제어 문자를 지운다."""
+    """\\r\\n을 \\n으로 바꾸고, 줄바꿈과 탭 밖의 제어 문자와 태그 문자, 방향 제어 문자를 지운다."""
     return _CONTROL.sub("", text.replace("\r\n", "\n"))
 
 
@@ -57,7 +59,7 @@ def _row(outcome: RunOutcome, output: str, errors: str, truncated: bool) -> dict
         "errors": errors,
         "truncated": truncated,
         "output_chars": outcome.output_chars,
-        "seconds": outcome.seconds,
+        "seconds": round(outcome.seconds, 1),  # 틀과 행이 이 함수를 함께 쓰므로 크기 계산도 반올림한 값으로 한다
     }
     if outcome.note:
         row["note"] = outcome.note
