@@ -41,6 +41,9 @@
     "Get-HotFix": ["__Server", "IPAddress"],
     "Get-NetIPConfiguration": ["PSComputerName"]
   },
+  "pipeline_remote_commands": [
+    "Get-CimInstance", "Get-HotFix", "Get-NetIPConfiguration", "Get-Process", "Get-Service"
+  ],
   "variable_params": [
     "OutVariable", "ov", "ErrorVariable", "ev", "WarningVariable", "wv", "InformationVariable", "iv",
     "PipelineVariable", "pv"
@@ -65,6 +68,6 @@
     "PSSenderInfo"
   ],
   "blocked_read_variables": ["ExecutionContext", "Host", "PSCmdlet"],
-  "blocked_wmi_classes": ["Win32_Product", "Win32_PingStatus"],
+  "blocked_wmi_classes": ["Win32_Product", "CIM_Product", "Win32_PingStatus"],
   "blocked_path_prefixes": ["function:", "alias:", "variable:"]
 }

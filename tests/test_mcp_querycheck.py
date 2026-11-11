@@ -118,6 +118,17 @@ def test_the_rules_file_lists_what_the_spec_lists():
     ]  # fmt: skip
 
 
+def test_the_rules_file_closes_the_gaps_of_the_first_review():
+    rules = load_rules()
+    # Win32_Product의 부모 클래스. 조회하면 같은 Windows Installer 공급자가 자식 클래스까지 훑는다
+    assert {"Win32_Product", "CIM_Product", "Win32_PingStatus"} <= set(rules["blocked_wmi_classes"])
+    # 원격 매개변수가 파이프라인으로도 묶이는 명령(2026-11-11 이 PC의 명령 정보). 통합 시험이 같은 목록을 다시 뽑는다
+    assert set(rules["pipeline_remote_commands"]) == {
+        "Get-CimInstance", "Get-HotFix", "Get-NetIPConfiguration", "Get-Process", "Get-Service",
+    }  # fmt: skip
+    assert set(rules["pipeline_remote_commands"]) <= set(rules["commands"])
+
+
 def test_every_short_name_in_the_spec_maps_to_an_allowed_command():
     rules = load_rules()
     spec = (ROOT / "docs/specs/2026-11-04-hq-mcp-design.md").read_text(encoding="utf-8")

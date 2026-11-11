@@ -204,13 +204,13 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 
 **인자**
 
-- 다른 컴퓨터로 가는 매개변수는 거절한다. 대상은 명령별로 실제 매개변수 정보에서 뽑는다: 이름이 `ComputerName`, `CimSession`, `Session`, `PSSession`, `Credential`인 매개변수와 그 별칭 전부다. 고정 목록으로는 빠진다. 2026-11-10 이 PC에서 허용 명령 66개를 훑었더니 `Get-CimInstance -ServerName`, `Get-HotFix -IPAddress`와 `-__Server`, `Get-NetIPConfiguration -PSComputerName`이 `ComputerName`이나 `CimSession`의 별칭이었다. 같은 이름이 다른 명령에서는 무해한 거르기 매개변수이므로(`Get-NetIPAddress -IPAddress`) 명령별로 판단한다. PowerShell은 이름과 별칭 모두 앞부분 줄임을 받으므로(`-PSP`가 `-PSPath`로 통했다) `-Comp`, `-Server` 같은 줄임도 거절한다. 판단이 모호하면 거절한다. 서버의 명령 버전에만 있는 별칭까지 보장하지는 않는다.
+- 다른 컴퓨터로 가는 매개변수는 거절한다. 대상은 명령별로 실제 매개변수 정보에서 뽑는다: 이름이 `ComputerName`, `CimSession`, `Session`, `PSSession`, `Credential`인 매개변수와 그 별칭 전부다. 고정 목록으로는 빠진다. 2026-11-10 이 PC에서 허용 명령 66개를 훑었더니 `Get-CimInstance -ServerName`, `Get-HotFix -IPAddress`와 `-__Server`, `Get-NetIPConfiguration -PSComputerName`이 `ComputerName`이나 `CimSession`의 별칭이었다. 같은 이름이 다른 명령에서는 무해한 거르기 매개변수이므로(`Get-NetIPAddress -IPAddress`) 명령별로 판단한다. PowerShell은 이름과 별칭 모두 앞부분 줄임을 받으므로(`-PSP`가 `-PSPath`로 통했다) `-Comp`, `-Server` 같은 줄임도 거절한다. 판단이 모호하면 거절한다. 서버의 명령 버전에만 있는 별칭까지 보장하지는 않는다. 매개변수 이름에 영문, 숫자, 밑줄이 아닌 글자가 있으면 거절한다. PowerShell은 매개변수 이름을 비교할 때 소프트 하이픈 같은 보이지 않는 글자를 무시하므로, 그런 글자를 끼운 이름도 원래 매개변수로 묶인다(2026-11-11 이 PC에서 측정). 원격 매개변수가 파이프라인 입력으로도 묶이는 명령(`Get-CimInstance`, `Get-HotFix`, `Get-Service`, `Get-Process`, `Get-NetIPConfiguration` 등. 명령 정보에서 뽑는다)은 파이프라인의 맨 앞에만 쓸 수 있다. 앞 명령이 낸 개체의 `ServerName` 같은 속성이 주소로 묶이기 때문이다.
 - `ForEach-Object`와 `%`는 스크립트 블록 형태만 받는다. `% Delete`, `-MemberName Delete`는 메서드 호출이므로 거절한다.
 - 스플래팅(`@p`)은 거절한다.
 - 명령 인자의 글자가 `\\`나 `//`로 시작하면 거절한다. `::`를 포함한 인자는 `Registry::`로 시작할 때만 받는다. UNC 경로와 `FileSystem::\\z\c$\x` 같은 공급자 표기를 막고, 사용자별 자동 실행 조회에 흔한 `Registry::HKEY_USERS\...`는 남긴다. `-Path:\\z\x`처럼 매개변수에 붙은 값도 같다. 변수가 섞인 문자열(`"\\$h\c$"`)도 글자 부분이 `\\`로 시작하면 거절한다.
 - `function:`, `alias:`, `variable:`로 시작하는 인자는 거절한다. 함수 본문을 스크립트 블록으로 꺼내는 길이다.
 - `switch -File`은 거절한다. 명령 인자가 아니어서 위의 경로 검사를 거치지 않는다.
-- 조회만 해도 서버를 바꾸거나 다른 컴퓨터에 닿는 WMI 클래스는 거절한다 **[판단]**: `Win32_Product`(조회하면 Windows Installer가 설치된 프로그램을 모두 점검하고 고칠 수 있다. Microsoft KB974524), `Win32_PingStatus`(조회가 곧 ping이다). 널리 알려진 동작이며 직접 시험하지는 않았다. 이름이 스크립트의 문자열 어디에 있든 거절한다. 다른 클래스까지 보장하지는 않는다.
+- 조회만 해도 서버를 바꾸거나 다른 컴퓨터에 닿는 WMI 클래스는 거절한다 **[판단]**: `Win32_Product`(조회하면 Windows Installer가 설치된 프로그램을 모두 점검하고 고칠 수 있다. Microsoft KB974524), `CIM_Product`(`Win32_Product`의 부모 클래스라 조회하면 같은 일이 일어난다), `Win32_PingStatus`(조회가 곧 ping이다). 널리 알려진 동작이며 직접 시험하지는 않았다. 이름이 스크립트의 문자열 어디에 있든 거절한다. 다른 클래스까지 보장하지는 않는다.
 
 **문법**
 
@@ -239,7 +239,7 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 - 문자열은 변수에 담거나 이어 붙여 만들 수 있으므로 경로 검사는 글자로 적힌 인자만 막는다. `$p = '\\z\c$\x'; Get-Content $p`는 통과한다. NTLM 세션은 자격 증명을 다음 서버로 넘기지 않으므로 인증이 필요한 접근은 대체로 실패하지만, 여기에 기대지 않는다.
 - 알고도 남겨 둔 길이 있다. `function:` 경로를 문자열로 이어 만들어 넘기거나(`Get-Item ('func' + 'tion:x')`) 오류 기록의 `InvocationInfo.MyCommand`를 거치면 서버에 이미 있는 함수의 본문이 스크립트 블록으로 나온다(2026-11-10 측정). 인자를 줄 수 없고, CDXML 함수는 `ForEach-Object`로 돌릴 수 없었으므로 쓸모는 좁다고 본다.
 - 실행 단계에서 한 번 더 막는 방법으로 ConstrainedLanguage 모드를 시험했다(2026-11-10). 메서드와 타입을 쓰는 우회는 모두 막혔지만 `[math]::Round`, `[pscustomobject]`, `ToXml()`, `Get-NetAdapter` 같은 CDXML 명령 불러오기까지 막혀 조회에 쓸 수 없었다. 넣지 않는다 **[판단]**.
-- **정적 검사로는 끝까지 막지 못한다.** 검토할 때마다 새 우회가 나왔다: 2026-11-06에 메서드 이름(`Format`, `Replace`, `GetType`), `++`, 공급자 경로, 2026-11-10에 `-as`, 꺼낸 스크립트 블록, `$PSDefaultParameterValues`, 같은 날 두 번째 점검에서 매개변수 별칭(`-ServerName`), 파싱 단계의 경로 조회, 조회만으로 서버를 바꾸는 WMI 클래스. Claude가 평소 쓰는 조회에서 실수로 지우거나 바꾸는 일은 막지만, 일부러 꾸민 스크립트는 통과할 수 있다고 본다. 침해사고 때 서버 출력에 심긴 지시를 Claude가 따르는 경우가 여기에 든다. 검사는 사고를 줄이는 장치이며 보안 경계가 아니다(12장). 조회도 매번 확인받으려면 13.2의 `allow`에서 `mcp__hq__run_query`를 빼고 `ask`에 넣는다.
+- **정적 검사로는 끝까지 막지 못한다.** 검토할 때마다 새 우회가 나왔다: 2026-11-06에 메서드 이름(`Format`, `Replace`, `GetType`), `++`, 공급자 경로, 2026-11-10에 `-as`, 꺼낸 스크립트 블록, `$PSDefaultParameterValues`, 같은 날 두 번째 점검에서 매개변수 별칭(`-ServerName`), 파싱 단계의 경로 조회, 조회만으로 서버를 바꾸는 WMI 클래스, 2026-11-11 구현 검토에서 보이지 않는 글자를 끼운 매개변수 이름, 파이프라인 속성으로 묶이는 주소, `CIM_Product`. Claude가 평소 쓰는 조회에서 실수로 지우거나 바꾸는 일은 막지만, 일부러 꾸민 스크립트는 통과할 수 있다고 본다. 침해사고 때 서버 출력에 심긴 지시를 Claude가 따르는 경우가 여기에 든다. 검사는 사고를 줄이는 장치이며 보안 경계가 아니다(12장). 조회도 매번 확인받으려면 13.2의 `allow`에서 `mcp__hq__run_query`를 빼고 `ask`에 넣는다.
 
 ## 8. 실행
 
@@ -514,6 +514,8 @@ Get-Content "\\$h\c$\x"
 $using:cred.UserName
 Get-CimInstance Win32_Product
 Get-CimInstance -Query "SELECT * FROM Win32_PingStatus WHERE Address='z'"
+Get-SmbConnection | Get-CimInstance Win32_OperatingSystem
+Get-CimInstance CIM_Product
 ```
 
 - 파서를 부르지 않고 거절해야 하는 표. 검사 프로세스가 뜨지 않음을 확인한다.
