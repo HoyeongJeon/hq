@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from mcp_cases import NO_PARSE, PASS_SCRIPTS, spec_attacks
-from ps import parse_errors
+from ps import parse_errors, run_ps
 
 from hq.mcp.querycheck import check_query
 
@@ -30,11 +30,11 @@ def codes_by_line(script):
     return verdict.ok, found
 
 
-# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 66줄을 차례로 검사하면 기본 한도 120초를 넘는다
+# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 67줄을 차례로 검사하면 기본 한도 120초를 넘는다
 @pytest.mark.timeout(600)
 def test_every_attack_in_the_spec_is_refused():
     attacks = spec_attacks()
-    assert len(attacks) >= 66 and "Get-Process | Stop-Process" in attacks
+    assert len(attacks) >= 67 and "Get-Process | Stop-Process" in attacks
     for script in attacks:
         verdict = check_query(script)
         assert verdict.ok is False, script
@@ -516,6 +516,42 @@ def test_a_path_after_empty_expansions_in_a_mixed_string_is_refused(script):
     assert not ok and "PATH" in found
 
 
+# 글자 부분은 원본이 아니라 엔진이 실행할 때 쓰는 틀 문자열(FormatExpression)에서 얻는다. 맨 글자 인자는 따옴표 친
+# 조각의 따옴표를 토크나이저가 지우고, here-string은 CR 하나도 줄바꿈으로 받으며, `t는 탭이 된다
+@pytest.mark.parametrize(
+    "script",
+    [
+        'Get-Content $null""\\\\z\\c$\\x',
+        'Get-Content $null"\\\\z\\c$\\x"',
+        "Get-Content $null'\\\\z\\c$\\x'",
+        "Get-ChildItem -Path $null''\\\\z\\c$",
+        'Get-Content -Path:$null""\\\\z\\c$\\x',
+        'Get-Content x, $null""\\\\z\\c$\\x',
+        '1 | ForEach-Object { Get-Content $null""\\\\z\\c$\\x }',
+        'Get-Content ${a}""\\\\z\\c$\\x',
+        'Get-Content $null""//z/c$/x',
+        'Get-Content $null"FileSystem:":\\\\z\\c$\\x',
+        'Get-Content $null""FileSystem:"":\\\\z\\c$\\x',
+        'Get-Content $null"function:\\x"',
+        "Get-Content $null'variable:\\x'",
+        'Get-Content @"\r\\\\z\\c$\\x\n$null\n\r"@',
+        'Get-Content @"\r\\\\z\\c$\\x\n$null\n"@',
+        'Get-Content @"\n$null\n\\\\z\\c$\\x\r"@',
+        'Get-Content "$null`t\\\\z\\c$\\x"',
+    ],
+)
+def test_a_path_is_judged_by_the_format_string_the_engine_uses(script):
+    ok, found = codes(script)
+    assert not ok and "PATH" in found
+
+
+def test_literal_braces_and_an_escaped_dollar_in_a_mixed_string_pass():
+    # 틀 문자열에서 글자 중괄호는 겹쳐 있다({{0}}). `$는 글자 $라 값이 $로 시작한다
+    script = "\n".join(['Write-Output "{0} $x {1}"', 'Write-Output "`$null\\\\z$null"'])
+    verdict = check_query(script)
+    assert (verdict.ok, verdict.reasons) == (True, ())
+
+
 def test_the_controls_of_the_second_review_pass():
     # 펼침 안의 코드는 경로 글자로 읽지 않는다. [pscustomobject]는 글자로 적은 표 앞과 -as 오른쪽에 쓸 수 있다
     script = "\n".join(
@@ -627,6 +663,23 @@ def test_other_shapes_of_the_opened_kinds_pass():
 
 def test_a_syntax_error_is_a_refusal():
     assert codes("Get-Service |")[1] == {"PARSE_ERROR"}
+
+
+# 검사 템플릿이 경로 규칙에 쓰는 비공개 속성. 이 PC의 PowerShell에서 사라지거나 바뀌면 여기서 먼저 알린다
+FORMAT_EXPRESSION = r"""
+$ErrorActionPreference = 'Stop'
+$property = [System.Management.Automation.Language.ExpandableStringExpressionAst].GetProperty(
+    'FormatExpression', [System.Reflection.BindingFlags]'Instance,NonPublic')
+$tree = [System.Management.Automation.Language.Parser]::ParseInput('"$null\\z"', [ref]$null, [ref]$null)
+$string = $tree.Find({ param($n) $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true)
+[Console]::Out.Write($property.GetValue($string))
+"""
+
+
+def test_the_engine_still_gives_the_format_string_the_path_rule_reads():
+    result = run_ps(FORMAT_EXPRESSION)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "{0}\\\\z"
 
 
 def test_the_check_template_parses_and_never_runs_the_script(tmp_path):

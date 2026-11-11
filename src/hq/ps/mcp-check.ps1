@@ -65,6 +65,12 @@ foreach ($hqProperty in $hqRules.static_methods.PSObject.Properties) {
 $hqScriptBlockCommands = New-HqSet $hqRules.script_block_commands
 # 인자를 모두 글자 그대로 적어야 하는 명령(WMI 클래스와 쿼리를 받는 Get-CimInstance)
 $hqLiteralArgumentCommands = New-HqSet $hqRules.literal_argument_commands
+# 변수가 섞인 문자열의 틀 문자열을 주는 비공개 속성(Get-HqLiteralPieces). 없으면 검사를 끝낸다(CHECK_FAILED)
+$hqFormatExpression = [System.Management.Automation.Language.ExpandableStringExpressionAst].GetProperty(
+    'FormatExpression', [System.Reflection.BindingFlags]'Instance,NonPublic')
+if ($null -eq $hqFormatExpression) {
+    throw [System.InvalidOperationException]::new('ExpandableStringExpressionAst에 FormatExpression 속성이 없습니다.')
+}
 # ForEach-Object를 메서드 호출 형태(PropertyAndMethodSet)로 바꾸는 매개변수와 그 별칭. ArgumentList의 별칭 Args는
 # 2026-11-11 이 PC의 명령 정보에서 보았다. -Args를 주면 스크립트 블록의 글자가 MemberName이 된다
 $hqForEachMemberParams = [string[]]@('MemberName', 'ArgumentList', 'Args')
@@ -192,34 +198,35 @@ function Test-HqBlockedPath([string[]]$pieces) {
 }
 
 function Get-HqLiteralPieces($string) {
-    # 변수가 섞인 문자열(큰따옴표, 펼치는 here-string, 펼침이 든 맨 글자)의 글자 부분: 안쪽 식(NestedExpressions) 밖의
-    # 원문을 차례로, 여닫는 따옴표와 here-string의 머리와 꼬리 줄 없이, 백틱을 모두 지운 것. 첫 조각은 문자열 맨
-    # 앞의 글자다(앞에 식이 있으면 빈 글자). 백틱은 다음 글자를 이스케이프할 뿐이므로 지우면 검사가 엄격해질 뿐이다.
-    # 안쪽 식의 코드는 경로 글자로 읽지 않는다. 그 안의 문자열은 Test-HqPaths가 따로 찾아 본다
-    $text = $string.Extent.Text
-    $base = $string.Extent.StartOffset
-    $begin = 0
-    $end = $text.Length
-    $kind = [System.Management.Automation.Language.StringConstantType]
-    if ($string.StringConstantType -eq $kind::DoubleQuoted) {
-        # 따옴표는 한 글자다(“ ”도 큰따옴표로 받는다)
-        $begin = 1
-        $end = $text.Length - 1
-    } elseif ($string.StringConstantType -eq $kind::DoubleQuotedHereString) {
-        # @" 뒤의 첫 줄바꿈 다음부터, "@ 앞의 마지막 줄바꿈(\r\n이면 \r)까지
-        $begin = $text.IndexOf([char]10) + 1
-        $end = $text.LastIndexOf([char]10)
-        if ($end -gt 0 -and [int]$text[$end - 1] -eq 13) { $end-- }
-        if ($end -lt $begin) { $end = $begin }
+    # 변수가 섞인 문자열(큰따옴표, 펼치는 here-string, 펼침이 든 맨 글자)의 글자 부분: 엔진이 실행할 때 쓰는 틀
+    # 문자열(FormatExpression)을 {n} 자리에서 나눈 조각들. 틀에서는 따옴표가 지워지고, 백틱 이스케이프가 풀리고,
+    # here-string의 머리와 꼬리가 떨어지고, 안쪽 식은 {n}이 되고, 글자 중괄호는 {{, }}로 겹쳐 있다. 첫 조각은 문자열
+    # 맨 앞의 글자다(앞에 식이 있으면 빈 글자). 인접한 자리 사이의 빈 조각도 넣는다. 안쪽 식의 코드는 경로 글자로
+    # 읽지 않는다. 그 안의 문자열은 Test-HqPaths가 따로 찾아 본다. 틀이 문자열이 아니거나 이 모양으로 읽히지 않으면
+    # 예외로 검사를 끝낸다(로더가 종료 코드 70으로 끝내고 Python은 CHECK_FAILED로 거절한다). 원본 글자로 대신하지 않는다
+    $format = $hqFormatExpression.GetValue($string)
+    if ($format -isnot [string]) {
+        throw [System.InvalidOperationException]::new('FormatExpression이 문자열이 아닙니다.')
     }
     $pieces = [System.Collections.Generic.List[string]]::new()
-    $at = $begin
-    foreach ($nested in $string.NestedExpressions) {
-        $from = $nested.Extent.StartOffset - $base
-        $pieces.Add($text.Substring($at, $from - $at).Replace('`', ''))
-        $at = $nested.Extent.EndOffset - $base
+    $current = [System.Text.StringBuilder]::new()
+    foreach ($match in [regex]::Matches($format, '\{\{|\}\}|\{[0-9]+\}|[{}]|[^{}]+')) {
+        $token = $match.Value
+        if ([string]::Equals($token, '{{', [StringComparison]::Ordinal)) {
+            [void]$current.Append('{')
+        } elseif ([string]::Equals($token, '}}', [StringComparison]::Ordinal)) {
+            [void]$current.Append('}')
+        } elseif ([regex]::IsMatch($token, '\A\{[0-9]+\}\z')) {
+            $pieces.Add($current.ToString())
+            [void]$current.Clear()
+        } elseif ($token.IndexOf('{', [StringComparison]::Ordinal) -ge 0 -or
+            $token.IndexOf('}', [StringComparison]::Ordinal) -ge 0) {
+            throw [System.InvalidOperationException]::new('FormatExpression을 읽을 수 없습니다.')
+        } else {
+            [void]$current.Append($token)
+        }
     }
-    $pieces.Add($text.Substring($at, $end - $at).Replace('`', ''))
+    $pieces.Add($current.ToString())
     return , $pieces.ToArray()
 }
 
