@@ -93,6 +93,47 @@ def test_a_failed_save_leaves_no_temp_file_and_keeps_the_old_secret(tmp_path, mo
     assert store.path_for(SERVER_ID).read_text(encoding="ascii") == before
 
 
+def test_save_survives_a_reader_holding_the_file_for_a_moment(tmp_path, monkeypatch):
+    # 다른 프로세스가 비밀번호 파일을 읽는 순간에 저장하면 바꿔치기가 WinError 5로 실패한다. 잠깐 뒤 다시 한다(스펙 3장)
+    store = SecretStore(tmp_path)
+    store.save(SERVER_ID, "old")
+    calls = []
+    real_replace = os.replace
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError(5, "액세스가 거부되었습니다")
+        real_replace(src, dst)
+
+    monkeypatch.setattr("hq.fileops.os.replace", flaky)
+    monkeypatch.setattr("hq.fileops.time.sleep", lambda seconds: None)
+    store.save(SERVER_ID, "new")
+    assert len(calls) == 3
+    text = store.path_for(SERVER_ID).read_text(encoding="ascii")
+    assert _unprotect(bytes.fromhex(text)).decode("utf-16-le") == "new"
+    assert [p.name for p in tmp_path.iterdir()] == [f"{SERVER_ID}.dpapi"]
+
+
+def test_save_still_fails_when_the_file_stays_locked(tmp_path, monkeypatch):
+    store = SecretStore(tmp_path)
+    store.save(SERVER_ID, "old")
+    before = store.path_for(SERVER_ID).read_text(encoding="ascii")
+    calls = []
+
+    def locked(src, dst):
+        calls.append(1)
+        raise PermissionError(5, "액세스가 거부되었습니다")
+
+    monkeypatch.setattr("hq.fileops.os.replace", locked)
+    monkeypatch.setattr("hq.fileops.time.sleep", lambda seconds: None)
+    with pytest.raises(PermissionError):
+        store.save(SERVER_ID, "new")
+    assert len(calls) == 5
+    assert [p.name for p in tmp_path.iterdir()] == [f"{SERVER_ID}.dpapi"]
+    assert store.path_for(SERVER_ID).read_text(encoding="ascii") == before
+
+
 def test_a_password_with_a_lone_surrogate_is_refused_in_korean_and_never_echoed(tmp_path):
     # 화면(JS 문자열)에서는 짝 없는 UTF-16 서로게이트가 올 수 있다. 영어 UnicodeEncodeError 대신 한국어로 알린다(I-1)
     store = SecretStore(tmp_path)

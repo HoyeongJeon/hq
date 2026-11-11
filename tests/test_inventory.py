@@ -192,6 +192,49 @@ def test_save_puts_the_whole_temp_file_on_disk_before_replacing(tmp_path, monkey
     assert calls == [("fsync", size), ("replace", "inventory.json.tmp")]
 
 
+def test_save_survives_a_reader_holding_the_file_for_a_moment(tmp_path, monkeypatch):
+    # MCP 서버가 inventory.json을 읽는 순간에 저장하면 바꿔치기가 WinError 5로 실패한다. 잠깐 뒤 다시 한다(스펙 3장)
+    inventory = make(tmp_path)
+    inventory.add(WEB)
+    inventory.save()
+    calls = []
+    real_replace = os.replace
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError(5, "액세스가 거부되었습니다")
+        real_replace(src, dst)
+
+    monkeypatch.setattr("hq.fileops.os.replace", flaky)
+    monkeypatch.setattr("hq.fileops.time.sleep", lambda seconds: None)
+    inventory.add(DB)
+    inventory.save()
+    assert len(calls) == 3
+    assert [s.name for s in make(tmp_path).servers] == ["WEB-PRD-01", "DB-01"]
+    assert not (tmp_path / "inventory.json.tmp").exists()
+
+
+def test_save_still_fails_when_the_file_stays_locked(tmp_path, monkeypatch):
+    inventory = make(tmp_path)
+    inventory.add(WEB)
+    inventory.save()
+    before = (tmp_path / "inventory.json").read_text(encoding="utf-8")
+    calls = []
+
+    def locked(src, dst):
+        calls.append(1)
+        raise PermissionError(5, "액세스가 거부되었습니다")
+
+    monkeypatch.setattr("hq.fileops.os.replace", locked)
+    monkeypatch.setattr("hq.fileops.time.sleep", lambda seconds: None)
+    inventory.add(DB)
+    with pytest.raises(PermissionError):
+        inventory.save()
+    assert len(calls) == 5
+    assert (tmp_path / "inventory.json").read_text(encoding="utf-8") == before
+
+
 def test_missing_file_means_empty(tmp_path):
     inventory = make(tmp_path)
     assert inventory.servers == [] and inventory.admin_ips == []

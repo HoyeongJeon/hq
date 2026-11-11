@@ -10,6 +10,7 @@ import os
 from ctypes import wintypes
 from pathlib import Path
 
+from hq.fileops import replace_with_retry
 from hq.validation import ValidationError, is_hex_id
 
 
@@ -84,7 +85,7 @@ class SecretStore:
                 file.write(protect(plaintext).hex())
                 file.flush()
                 os.fsync(file.fileno())
-            os.replace(temp, path)
+            replace_with_retry(temp, path)
         except BaseException:
             temp.unlink(missing_ok=True)
             raise

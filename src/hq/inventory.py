@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from hq.fileops import replace_with_retry
 from hq.validation import ValidationError, is_hex_id, validate_host, validate_ipv4, validate_username
 
 VERSION = 1
@@ -211,4 +212,4 @@ class Inventory:
                 os.fsync(file.fileno())
             if self._path.exists():
                 shutil.copy2(self._path, self._bak)
-            os.replace(temp, self._path)
+            replace_with_retry(temp, self._path)
