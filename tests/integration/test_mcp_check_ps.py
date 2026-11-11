@@ -426,7 +426,7 @@ def test_a_hashtable_key_is_plain_text_and_never_pstypename():
                 "TYPE",
             ),
             ("[ordered]@{ pstypename = 'x' }", "TYPE"),
-            ("@{ 'PSType­Name' = 'x' }", "TYPE"),
+            ("@{ 'PSType\u00adName' = 'x' }", "TYPE"),
             ("@{ $k = 1 }", "HASH_KEY"),
             ('@{ "a$b" = 1 }', "HASH_KEY"),
             ("@{ (1+1) = 1 }", "HASH_KEY"),
