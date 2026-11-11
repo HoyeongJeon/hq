@@ -4,9 +4,11 @@
 `[Console]::Error.WriteLine`으로만 쓰고, `[Environment]::Exit(n)`으로 끝낸다. 명령줄에는 템플릿을 읽어 점 실행하는
 로더만 넣는다. 스크립트와 값을 명령줄에 넣으면 길이 한도에 걸리고 한글은 더 빨리 찬다(스펙 8.2).
 
-PowerShell의 오류 스트림에 기록(오류, 경고 등)이 가면 PowerShell이 표준 오류에 CLIXML을 섞는다. 그 기록의 글은 값을
-옮길 수 있으므로 읽으면서 지운다. 템플릿을 읽지 못하거나 템플릿이 예외로 끝나면 로더가 예외의 종류와 줄 번호만 한 줄로
-쓰고 LOADER_FAILED로 끝낸다.
+로더는 템플릿의 PowerShell 스트림(출력, 오류, 경고, 자세한 정보, 디버그, 정보와 Write-Host)을 모두 버린다. 그 기록이
+표준 오류에 가면 PowerShell이 CLIXML로 섞어 쓰는데, <Objs> 덩어리를 아무 데서나 끊어 써서 그 사이에 템플릿이 쓴 줄이
+덩어리 안에 끼고, 기록의 글은 값을 옮길 수도 있다. 그래도 섞여 온 CLIXML($Host.UI.WriteErrorLine 등)은 읽으면서
+지운다. 템플릿을 읽지 못하거나 템플릿이 예외로 끝나면 로더가 예외의 종류와 줄 번호만 한 줄로 쓰고 LOADER_FAILED로
+끝낸다.
 """
 
 import base64
@@ -52,13 +54,17 @@ def loader_argv(template: Path) -> list[str]:
 
     읽기, 스크립트 블록 만들기, 실행에서 난 예외는 종류와 줄 번호만 쓴다. 예외 메시지는 값(사용자 이름, 비밀번호
     파일 경로)의 일부를 옮길 수 있다. 템플릿 안의 문장 종료 오류도 다음 문장으로 넘어가지 않고 여기서 끝난다.
+
+    점 실행에 붙인 `*>$null`이 템플릿의 PowerShell 스트림을 모두 버린다. [Console]과 [Environment]::Exit는 그대로다.
+    이 PC에서 확인한 부수 효과: 템플릿이 부른 외부 프로그램(cmd 등)의 출력도 PowerShell이 받아 버리고, 그 프로그램이
+    표준 오류에 쓰면 $?가 False가 되며, $ErrorActionPreference가 Stop이면 그 줄이 예외가 되어 LOADER_FAILED로 끝난다.
     """
     loader = (
         "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n"
         "$ProgressPreference = 'SilentlyContinue'\n"
         f"$hqTemplate = {ps_json_literal(str(template))} | ConvertFrom-Json\n"
         "try {\n"
-        "    . ([scriptblock]::Create([IO.File]::ReadAllText($hqTemplate, [Text.Encoding]::UTF8)))\n"
+        "    . ([scriptblock]::Create([IO.File]::ReadAllText($hqTemplate, [Text.Encoding]::UTF8))) *>$null\n"
         "} catch {\n"
         "    $hqType = $_.Exception.GetType().FullName\n"
         "    $hqLine = $_.InvocationInfo.ScriptLineNumber\n"
@@ -142,6 +148,9 @@ class _Kept:
 
 class _Clixml:
     """표준 오류에서 PowerShell이 쓴 CLIXML만 지운다: `#< CLIXML` 표시 줄과 `<Objs ...>...</Objs>` 덩어리.
+
+    둘째 겹이다. 로더가 템플릿의 스트림을 모두 버리므로 보통은 올 일이 없고, $Host.UI.WriteErrorLine처럼 스트림을
+    거치지 않는 글만 남는다.
 
     덩어리는 표시 줄이 온 뒤에만 찾는다. PowerShell은 덩어리보다 표시 줄을 먼저 쓰므로, 그 전의 `<Objs`는 템플릿이
     쓴 글이다. 조각 경계에 걸친 표시는 다음 조각까지 쥐고 있고(몇 글자뿐이다), 덩어리 안의 글자는 쥐지 않고 버린다.

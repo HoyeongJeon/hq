@@ -123,15 +123,43 @@ def test_powershells_own_records_are_removed_and_the_lines_around_them_kept(tmp_
     assert result.total_chars == len("앞\n뒤\n")  # 지운 글자는 세지 않는다
 
 
+def test_records_never_interleave_with_the_templates_own_error_lines(tmp_path):
+    # PowerShell은 기록의 <Objs> 덩어리를 약 6,000자마다 아무 데서나 끊어 쓴다. 기록이 표준 오류에 가면 그 사이에
+    # 쓴 줄이 덩어리 안에 끼어 함께 지워진다. 로더가 모든 스트림을 버려 기록이 아예 가지 않게 한다
+    body = READ + 'for ($i = 1; $i -le 300; $i++) { Write-Error "e$i"; [Console]::Error.WriteLine("plain$i") }\n'
+    result = run_ps_template(template(tmp_path, body), {}, timeout=60)
+    assert result.stderr.splitlines() == [f"plain{i}" for i in range(1, 301)]
+    assert "CLIXML" not in result.stderr and "<Objs" not in result.stderr
+
+
+def test_leaked_pipeline_output_warnings_and_host_text_reach_neither_stream(tmp_path):
+    body = (
+        READ
+        + "'leaked-output'\n"
+        + "Write-Warning 'leaked-warning'\n"
+        + "Write-Host 'leaked-host'\n"
+        + "[Console]::Out.WriteLine('plain')\n"
+    )
+    result = run_ps_template(template(tmp_path, body), {}, timeout=30)
+    assert (result.stdout, result.stderr) == ("plain\n", "")
+
+
+def test_exit_inside_the_template_still_sets_the_exit_code(tmp_path):
+    body = READ + "Write-Error x\n[Console]::Out.WriteLine('before exit')\n[Environment]::Exit(3)\n"
+    result = run_ps_template(template(tmp_path, body), {}, timeout=30)
+    assert (result.code, result.stdout, result.stderr, result.killed) == (3, "before exit\n", "", False)
+
+
 @pytest.mark.parametrize(
     ("body", "error"),
     [
         (READ + "throw 'secret-PROBE'\n", "System.Management.Automation.RuntimeException, 줄 2"),
+        (READ + "Write-Error x\nthrow 'secret-PROBE'\n", "System.Management.Automation.RuntimeException, 줄 3"),
         # 로더의 5째 줄이 템플릿을 읽어 스크립트 블록을 만든다. 문법 오류와 없는 파일은 그 줄에서 난다
         (READ + "if ('secret-PROBE' {\n", "System.Management.Automation.MethodInvocationException, 줄 5"),
         (None, "System.Management.Automation.MethodInvocationException, 줄 5"),
     ],
-    ids=["throws", "syntax-error", "missing-file"],
+    ids=["throws", "throws-after-records", "syntax-error", "missing-file"],
 )
 def test_a_template_that_fails_to_load_or_throws_ends_with_one_plain_line(tmp_path, body, error):
     path = template(tmp_path, body) if body is not None else tmp_path / "secret-PROBE 없음.ps1"
