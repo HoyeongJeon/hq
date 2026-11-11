@@ -1,0 +1,70 @@
+{
+  "commands": [
+    "Get-ChildItem", "Get-Item", "Get-ItemProperty", "Get-Content", "Select-String", "Test-Path", "Get-FileHash",
+    "Get-Acl", "Get-ItemPropertyValue", "Get-AuthenticodeSignature", "Get-Process", "Get-Service", "Get-CimInstance",
+    "Get-WinEvent", "Get-EventLog", "Get-HotFix", "Get-Volume", "Get-Disk", "Get-Partition", "Get-PhysicalDisk",
+    "Get-PSDrive", "Get-Counter", "Get-ComputerInfo", "Get-Date", "Get-TimeZone", "Get-Culture",
+    "Get-ExecutionPolicy", "Get-Member", "Get-NetTCPConnection", "Get-NetUDPEndpoint", "Get-NetIPAddress",
+    "Get-NetIPConfiguration", "Get-NetAdapter", "Get-NetRoute", "Get-NetFirewallRule", "Get-NetFirewallProfile",
+    "Get-DnsClientCache", "Get-DnsClientServerAddress", "Get-SmbShare", "Get-SmbSession", "Get-SmbOpenFile",
+    "Get-SmbConnection", "Get-ScheduledTask", "Get-ScheduledTaskInfo", "Get-LocalUser", "Get-LocalGroup",
+    "Get-LocalGroupMember", "Get-MpComputerStatus", "Get-MpThreat", "Get-MpThreatDetection",
+    "Where-Object", "ForEach-Object", "Select-Object", "Sort-Object", "Group-Object", "Measure-Object",
+    "Compare-Object", "Get-Unique", "Format-Table", "Format-List", "Format-Wide", "Out-String", "Out-Null",
+    "ConvertTo-Json", "ConvertTo-Csv", "Write-Output", "Write-Host"
+  ],
+  "aliases": {
+    "gci": "Get-ChildItem", "ls": "Get-ChildItem", "dir": "Get-ChildItem",
+    "gi": "Get-Item",
+    "gc": "Get-Content", "cat": "Get-Content",
+    "gp": "Get-ItemProperty",
+    "gps": "Get-Process", "ps": "Get-Process",
+    "gsv": "Get-Service",
+    "sls": "Select-String",
+    "?": "Where-Object", "where": "Where-Object",
+    "%": "ForEach-Object", "foreach": "ForEach-Object",
+    "select": "Select-Object", "sort": "Sort-Object", "group": "Group-Object", "measure": "Measure-Object",
+    "ft": "Format-Table", "fl": "Format-List"
+  },
+  "external": {
+    "hostname": [[]],
+    "systeminfo": [[]],
+    "quser": [[]],
+    "whoami": [[], ["/all"]],
+    "ipconfig": [[], ["/all"]],
+    "tasklist": [[], ["/v"]],
+    "netstat": {"flag_letters": "anoers"}
+  },
+  "remote_params": ["ComputerName", "CN", "CimSession", "Session", "PSSession", "Credential"],
+  "remote_param_aliases": {
+    "Get-CimInstance": ["ServerName"],
+    "Get-HotFix": ["__Server", "IPAddress"],
+    "Get-NetIPConfiguration": ["PSComputerName"]
+  },
+  "variable_params": [
+    "OutVariable", "ov", "ErrorVariable", "ev", "WarningVariable", "wv", "InformationVariable", "iv",
+    "PipelineVariable", "pv"
+  ],
+  "instance_methods": [
+    "ToString", "ToXml", "Trim", "TrimStart", "TrimEnd", "PadLeft", "PadRight", "Split", "Substring", "ToLower",
+    "ToUpper", "Contains", "StartsWith", "EndsWith", "IndexOf", "AddDays", "AddHours", "AddMinutes", "AddSeconds",
+    "IsMatch", "Match", "Matches"
+  ],
+  "static_methods": {
+    "string": ["Format", "Join", "IsNullOrEmpty", "IsNullOrWhiteSpace"],
+    "math": ["Round", "Floor", "Ceiling", "Abs", "Max", "Min"],
+    "regex": ["IsMatch", "Match", "Matches", "Replace"]
+  },
+  "types": [
+    "int", "long", "double", "decimal", "bool", "string", "char", "datetime", "timespan", "array", "hashtable",
+    "ordered", "pscustomobject", "regex", "math", "xml"
+  ],
+  "assignable_exceptions": ["ErrorActionPreference", "ProgressPreference", "null"],
+  "extra_protected_variables": [
+    "_", "PSItem", "Matches", "LASTEXITCODE", "foreach", "switch", "this", "OFS", "PSModuleAutoLoadingPreference",
+    "PSSenderInfo"
+  ],
+  "blocked_read_variables": ["ExecutionContext", "Host", "PSCmdlet"],
+  "blocked_wmi_classes": ["Win32_Product", "Win32_PingStatus"],
+  "blocked_path_prefixes": ["function:", "alias:", "variable:"]
+}
