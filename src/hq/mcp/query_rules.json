@@ -44,6 +44,10 @@
   "pipeline_remote_commands": [
     "Get-CimInstance", "Get-HotFix", "Get-NetIPConfiguration", "Get-Process", "Get-Service"
   ],
+  "script_block_commands": [
+    "Where-Object", "ForEach-Object", "Select-Object", "Sort-Object", "Group-Object", "Measure-Object",
+    "Compare-Object", "Format-Table", "Format-List", "Format-Wide"
+  ],
   "variable_params": [
     "OutVariable", "ov", "ErrorVariable", "ev", "WarningVariable", "wv", "InformationVariable", "iv",
     "PipelineVariable", "pv"

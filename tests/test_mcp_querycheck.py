@@ -129,6 +129,17 @@ def test_the_rules_file_closes_the_gaps_of_the_first_review():
     assert set(rules["pipeline_remote_commands"]) <= set(rules["commands"])
 
 
+def test_only_shaping_commands_may_take_a_script_block_argument():
+    # 다른 명령에 준 스크립트 블록은 지연 바인딩되어 결과가 매개변수 값이 된다. 통합 시험이 이 명령들의 파이프라인
+    # 매개변수가 입력 객체뿐임을 이 PC의 명령 정보로 확인한다
+    rules = load_rules()
+    assert rules["script_block_commands"] == [
+        "Where-Object", "ForEach-Object", "Select-Object", "Sort-Object", "Group-Object", "Measure-Object",
+        "Compare-Object", "Format-Table", "Format-List", "Format-Wide",
+    ]  # fmt: skip
+    assert set(rules["script_block_commands"]) <= set(rules["commands"])
+
+
 def test_every_short_name_in_the_spec_maps_to_an_allowed_command():
     rules = load_rules()
     spec = (ROOT / "docs/specs/2026-11-04-hq-mcp-design.md").read_text(encoding="utf-8")
