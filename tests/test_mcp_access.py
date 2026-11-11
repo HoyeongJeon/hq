@@ -1,4 +1,5 @@
 import json
+import logging
 import socket
 import time
 
@@ -18,6 +19,7 @@ from hq.mcp.access import (
 )
 
 ID_A, ID_B = "a" * 32, "b" * 32
+UNREADABLE = "서버 목록 파일(inventory.json)을 읽을 수 없습니다. HQ 창을 열어 확인하세요."
 
 
 def write(path, data, bom=False):
@@ -84,6 +86,26 @@ def test_canonical_ip_compares_by_value():
     assert canonical_ip("::ffff:10.0.1.21") == "10.0.1.21" and canonical_ip(" 10.0.1.21 ") == "10.0.1.21"
     with pytest.raises(ValueError):
         canonical_ip("web01")
+
+
+def test_canonical_ip_drops_the_ipv6_zone(tmp_path):
+    assert canonical_ip("fe80::1%12") == canonical_ip("fe80::1") == "fe80::1"
+    # never에 범위 표시를 붙여 적어도, 풀린 주소에 범위 표시가 붙어 와도 같은 주소로 비교한다
+    write(tmp_path / "f", {"version": 1, "enabled": [], "never": ["fe80::1%12"]})
+    assert load_access(tmp_path / "f").never == ("fe80::1",)
+
+    def zoned(host, port):
+        return [(23, 1, 6, "", ("fe80::1%12", 0, 0, 12))]
+
+    assert resolve_host("web01", getaddrinfo=zoned) == ["fe80::1"]
+
+
+def test_a_never_address_written_another_way_in_the_file_still_blocks_the_server(tmp_path):
+    write(tmp_path / "f", {"version": 1, "enabled": [{"id": ID_A, "host": "10.0.1.21"}], "never": ["::ffff:10.0.1.21"]})
+    access = load_access(tmp_path / "f")
+    server = Server(ID_A, "웹", "10.0.1.21", "admin")
+    assert usable([server], Access(enabled=access.enabled)) == [server]  # 켜져 있지만
+    assert usable([server], access) == []  # 금지 주소다
 
 
 def test_usable_needs_the_same_id_and_host_pair():
@@ -168,19 +190,39 @@ def test_load_servers_reads_again_while_hq_replaces_the_file(tmp_path, monkeypat
     assert len(calls) == 3 and waits == [0.05, 0.05]
 
 
-@pytest.mark.parametrize("cause, reads", [(PermissionError(5, "Access is denied"), 5), (ValueError("버전 2"), 1)])
-def test_load_servers_reads_again_only_while_the_file_is_locked(tmp_path, monkeypatch, cause, reads):
+@pytest.mark.parametrize(
+    "cause, reads, problem",
+    [(PermissionError(5, "Access is denied"), 5, "잠김"), (ValueError("버전 2"), 1, UNREADABLE)],
+    ids=["locked", "broken"],
+)
+def test_load_servers_reads_again_only_while_the_file_is_locked(tmp_path, monkeypatch, cause, reads, problem):
     (tmp_path / "inventory.json").write_text("{}", encoding="utf-8")
     calls, waits = [], []
 
     def failing(self):
         calls.append(1)
-        raise InventoryError("서버 목록 파일을 읽을 수 없습니다") from cause
+        raise InventoryError("잠김") from cause
 
     monkeypatch.setattr(Inventory, "load", failing)
     monkeypatch.setattr("hq.mcp.access.time.sleep", waits.append)
-    assert load_servers(tmp_path / "inventory.json") == ([], "서버 목록 파일을 읽을 수 없습니다")
+    assert load_servers(tmp_path / "inventory.json") == ([], problem)
     assert len(calls) == reads and waits == [0.05] * (reads - 1)
+
+
+@pytest.mark.parametrize(
+    "server_id, username, leak",
+    [(ID_A, "op$erator", "op$erator"), ("server-7f", "admin", "server-7f")],
+    ids=["bad-username", "bad-id"],
+)
+def test_load_servers_keeps_usernames_and_server_ids_out_of_the_problem(tmp_path, caplog, server_id, username, leak):
+    # 문제 글자는 Claude에게 간다. InventoryError의 글에는 검사에 걸린 ID나 서버 id가 그대로 들어 있다
+    item = {"id": server_id, "name": "웹", "host": "10.0.1.21", "username": username}
+    write(tmp_path / "inventory.json", {"version": 1, "settings": {"admin_ips": []}, "servers": [item]})
+    with caplog.at_level(logging.WARNING, logger="hq.mcp.access"):
+        servers, problem = load_servers(tmp_path / "inventory.json")
+    assert servers == [] and problem == UNREADABLE
+    assert username not in problem and server_id not in problem
+    assert leak in caplog.text  # 자세한 이유는 로그에만 남는다
 
 
 def test_save_then_load_round_trips(tmp_path):
@@ -190,3 +232,23 @@ def test_save_then_load_round_trips(tmp_path):
     save_access(path, access)  # 있는 파일을 바꿔치기한다
     assert load_access(path) == access
     assert [p.name for p in path.parent.iterdir()] == ["mcp-access.json"]  # tmp가 남지 않는다
+
+
+def test_save_writes_the_forms_that_load_and_usable_compare(tmp_path):
+    path = tmp_path / "mcp-access.json"
+    save_access(path, Access(enabled=((ID_A, "WEB01"),), never=("::ffff:10.0.1.21",)))
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "enabled": [{"id": ID_A, "host": "web01"}],
+        "never": ["10.0.1.21"],
+    }
+
+
+def test_save_refuses_a_never_value_that_is_not_an_ip_and_leaves_the_file(tmp_path):
+    # 그대로 쓰면 다음에 읽을 때 파일이 깨진 것으로 보여 모든 서버가 꺼지고 저장도 막힌다
+    path = tmp_path / "mcp-access.json"
+    save_access(path, Access(enabled=((ID_A, "10.0.1.21"),), never=("10.0.1.99",)))
+    before = path.read_bytes()
+    with pytest.raises(AccessError, match="web01"):
+        save_access(path, Access(never=("10.0.1.99", "web01")))
+    assert path.read_bytes() == before and [p.name for p in tmp_path.iterdir()] == ["mcp-access.json"]

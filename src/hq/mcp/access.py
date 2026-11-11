@@ -7,6 +7,7 @@
 import contextlib
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
@@ -20,6 +21,8 @@ from typing import Any
 from hq.fileops import read_text_with_retry, replace_with_retry
 from hq.inventory import Inventory, InventoryError, Server
 
+_log = logging.getLogger(__name__)
+
 VERSION = 1
 _KEYS = {"version", "enabled", "never"}
 _ITEM_KEYS = {"id", "host"}
@@ -28,6 +31,9 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # HQ 창이 inventory.json을 바꿔치기하는 순간에 읽으면 WinError 5로 실패하고 곧 풀린다(스펙 3장). fileops와 같은 값
 _READ_ATTEMPTS = 5
 _READ_DELAY = 0.05
+# 문제 글자는 Claude에게 간다. InventoryError의 글에는 검사에 걸린 ID(username)나 서버 id가 들어 있을 수 있으므로
+# 그 글은 로그에만 남기고 이 글을 돌려준다
+_INVENTORY_UNREADABLE = "서버 목록 파일(inventory.json)을 읽을 수 없습니다. HQ 창을 열어 확인하세요."
 
 
 @dataclass(frozen=True)
@@ -109,13 +115,21 @@ def _never_ip(value: object) -> str:
 
 
 def save_access(path: Path, access: Access) -> None:
-    """사용 설정을 tmp에 쓰고 바꿔치기한다. 깨진 파일에서 읽은 설정이면 덮어쓰지 않고 AccessError."""
+    """사용 설정을 tmp에 쓰고 바꿔치기한다. 깨진 파일에서 읽은 설정이거나 never에 IP가 아닌 값이 있으면 AccessError.
+
+    load_access와 usable이 비교하는 모양(소문자 host, canonical_ip)으로 고쳐 쓴다. IP가 아닌 never를 그대로 쓰면
+    다음에 읽을 때 파일이 깨진 것으로 보여 모든 서버가 꺼지고 저장도 막히므로, 이때는 아무것도 쓰지 않는다.
+    """
     if access.problem is not None:
         raise AccessError(f"사용 설정 파일을 덮어쓰지 않았습니다. {access.problem}")
+    try:
+        never = [_never_ip(value) for value in access.never]
+    except ValueError as exc:
+        raise AccessError(f"사용 설정을 저장하지 않았습니다. {exc}") from None
     data = {
         "version": VERSION,
-        "enabled": [{"id": server_id, "host": host} for server_id, host in access.enabled],
-        "never": list(access.never),
+        "enabled": [{"id": server_id, "host": host.lower()} for server_id, host in access.enabled],
+        "never": never,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + ".tmp")
@@ -128,10 +142,15 @@ def save_access(path: Path, access: Access) -> None:
 
 
 def canonical_ip(text: str) -> str:
-    """주소 값을 한 가지 글자로 고친다. IP가 아니면 ValueError. ::ffff:10.0.1.21처럼 IPv4를 감싼 IPv6는 IPv4로."""
+    """주소 값을 한 가지 글자로 고친다. IP가 아니면 ValueError.
+
+    ::ffff:10.0.1.21처럼 IPv4를 감싼 IPv6는 IPv4로, fe80::1%12의 범위 표시(%12)는 떼어 fe80::1로 쓴다.
+    """
     address = ipaddress.ip_address(text.strip())
-    if isinstance(address, ipaddress.IPv6Address) and (mapped := address.ipv4_mapped) is not None:
-        return str(mapped)
+    if isinstance(address, ipaddress.IPv6Address):
+        if (mapped := address.ipv4_mapped) is not None:
+            return str(mapped)
+        address = ipaddress.IPv6Address(address.packed)  # 범위 표시가 없는 같은 주소
     return str(address)
 
 
@@ -151,8 +170,11 @@ def load_servers(inventory_path: Path) -> tuple[list[Server], str | None]:
             inventory.load()
             return inventory.servers, None
         except InventoryError as exc:
+            if not isinstance(exc.__cause__, PermissionError):
+                _log.warning("서버 목록 파일을 읽을 수 없습니다: %s", exc)
+                return [], _INVENTORY_UNREADABLE
             attempts -= 1
-            if attempts == 0 or not isinstance(exc.__cause__, PermissionError):
+            if attempts == 0:  # 잠긴 경우의 글에는 파일 경로만 있다
                 return [], str(exc)
         time.sleep(_READ_DELAY)
 
