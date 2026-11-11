@@ -108,10 +108,12 @@ def test_the_rules_file_lists_what_the_spec_lists():
     assert "Get-WmiObject" not in rules["commands"] and "Get-Command" not in rules["commands"]
     assert rules["instance_methods"] == [
         "ToString", "ToXml", "Trim", "TrimStart", "TrimEnd", "PadLeft", "PadRight", "Split", "Substring", "ToLower",
-        "ToUpper", "Contains", "StartsWith", "EndsWith", "IndexOf", "AddDays", "AddHours", "AddMinutes", "AddSeconds",
+        "ToUpper", "Contains", "StartsWith", "EndsWith", "AddDays", "AddHours", "AddMinutes", "AddSeconds",
         "IsMatch", "Match", "Matches",
     ]  # fmt: skip
-    assert not {"Format", "Replace", "GetType"} & set(rules["instance_methods"])
+    methods = next(x for x in spec.splitlines() if x.startswith("- 인스턴스 메서드:")).split("`")[1].split()
+    assert rules["instance_methods"] == methods
+    assert not {"Format", "Replace", "GetType", "IndexOf"} & set(rules["instance_methods"])
     assert rules["types"] == [
         "int", "long", "double", "decimal", "bool", "string", "char", "datetime", "timespan", "array", "hashtable",
         "ordered", "pscustomobject", "regex", "math", "xml",
@@ -127,6 +129,21 @@ def test_the_rules_file_closes_the_gaps_of_the_first_review():
         "Get-CimInstance", "Get-HotFix", "Get-NetIPConfiguration", "Get-Process", "Get-Service",
     }  # fmt: skip
     assert set(rules["pipeline_remote_commands"]) <= set(rules["commands"])
+
+
+def test_the_rules_file_closes_the_gaps_of_the_expression_review():
+    rules = load_rules()
+    # 클래스 이름을 이어 붙여 만들면 이름 검사를 지나치므로 인자를 모두 글자 그대로 적게 한다
+    assert rules["literal_argument_commands"] == ["Get-CimInstance"]
+    # 해시테이블이 MachineName을 가진 개체로 바뀌어 묶인다
+    assert "InputObject" in rules["remote_param_aliases"]["Get-Service"]
+    assert "InputObject" in rules["remote_param_aliases"]["Get-Process"]
+    # 새 세션에 없어 변수 목록에 잡히지 않는 환경 설정 변수. 실제 조회에 흔한 지역 이름(Event 등)은 넣지 않는다
+    assert {
+        "LogCommandHealthEvent", "LogCommandLifecycleEvent", "LogEngineHealthEvent", "LogEngineLifecycleEvent",
+        "LogProviderHealthEvent", "LogProviderLifecycleEvent", "Transcript",
+    } <= set(rules["extra_protected_variables"])  # fmt: skip
+    assert not {"Event", "Sender", "EventArgs"} & set(rules["extra_protected_variables"])
 
 
 def test_only_shaping_commands_may_take_a_script_block_argument():

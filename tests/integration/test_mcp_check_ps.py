@@ -30,11 +30,11 @@ def codes_by_line(script):
     return verdict.ok, found
 
 
-# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 58줄을 차례로 검사하면 기본 한도 120초를 넘는다
+# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 64줄을 차례로 검사하면 기본 한도 120초를 넘는다
 @pytest.mark.timeout(600)
 def test_every_attack_in_the_spec_is_refused():
     attacks = spec_attacks()
-    assert len(attacks) >= 58 and "Get-Process | Stop-Process" in attacks
+    assert len(attacks) >= 64 and "Get-Process | Stop-Process" in attacks
     for script in attacks:
         verdict = check_query(script)
         assert verdict.ok is False, script
@@ -296,25 +296,199 @@ def test_a_name_with_any_character_outside_printable_ascii_is_refused(script, co
     assert not ok and code in found
 
 
-# 스크립트 블록 안의 문자열은 어디에 있든 경로 규칙을 따른다. 블록의 결과는 지연 바인딩(매개변수 값으로 준 블록을
-# 파이프라인 입력마다 실행), 파이프라인, 계산 속성으로 다른 명령의 경로 매개변수에 닿는다. 괄호나 $( )로 감싼 블록과
-# 변수에 담은 블록도 지연 바인딩된다(2026-11-11 이 PC에서 Get-Date -Date로 측정)
+def assert_each_line_refused(lines):
+    """줄마다 (스크립트, 코드). 검사 하나로 모두 보고, 줄마다 그 줄 번호의 이유에 코드가 있는지 본다."""
+    ok, found = codes_by_line("\n".join(script for script, _ in lines))
+    assert not ok
+    missing = {n: (script, code) for n, (script, code) in enumerate(lines, 1) if code not in found.get(n, set())}
+    assert missing == {}
+
+
+def test_strings_in_a_shaping_command_block_are_code_not_arguments():
+    # 경로 규칙은 글자로 적은 명령 인자만 본다(스펙 7.2). 다듬기 명령에 준 블록 안의 문자열은 인자가 아니다
+    script = "\n".join(
+        [
+            "Get-NetTCPConnection | Where-Object { $_.LocalAddress -ne '::1' }",
+            'Get-Volume | ForEach-Object { "$([math]::Round($_.Size/1GB,1)) GB" }',
+            "Get-ChildItem | ForEach-Object { ($_.FullName -split '\\\\')[-1] }",
+            "Get-ChildItem | Where-Object { $_.Path -match '\\\\AppData\\\\' }",
+            "Get-ChildItem C:\\ | Select-Object @{n='Leaf';e={($_.FullName -split '\\\\')[-1]}}",
+        ]
+    )
+    verdict = check_query(script)
+    assert (verdict.ok, verdict.reasons) == (True, ())
+
+
 @pytest.mark.parametrize(
-    "script, expected",
+    "script",
     [
-        ("'x' | Get-Content -Path { '\\\\z\\c$\\x' }", {"SCRIPT_BLOCK_ARG", "PATH"}),
-        ("'x' | Get-Content -Path:{ 'C:\\x' }", {"SCRIPT_BLOCK_ARG"}),
-        ("'x' | Get-Content ({ 'C:\\x' })", {"SCRIPT_BLOCK_ARG"}),
-        ("'x' | Get-Content $({ 'C:\\x' })", {"SCRIPT_BLOCK_ARG"}),
-        ("$b = { '\\\\z\\c$\\x' }; 'x' | Get-Content -Path $b", {"PATH"}),
-        ("1 | ForEach-Object { 'FileSystem::C:\\x' } | Get-Content", {"PATH"}),
-        ("1 | Select-Object @{n='Path';e={'\\\\z\\c$\\x'}} | Get-Content", {"PATH"}),
-        ("$b = { 'fun\u00adction:x' }", {"PATH"}),
+        "Get-ChildItem | Where-Object { Test-Path '\\\\z\\c$\\x' }",
+        'Get-ChildItem | ForEach-Object { Get-Content "\\\\$($_.Name)\\c$\\x" }',
+        "Get-Content (1 | ForEach-Object { '\\\\z\\c$\\x' })",
+        "Get-Content -Path:$('\\\\z\\c$\\x')",
+        "Get-Item ('\\\\z\\c$\\x')",
+        "Get-Item @('\\\\z\\c$\\x')",
     ],
 )
-def test_no_string_in_a_script_block_gets_past_the_path_rule(script, expected):
+def test_a_path_written_in_a_command_argument_is_refused_wherever_the_command_is(script):
     ok, found = codes(script)
-    assert not ok and expected <= found
+    assert not ok and "PATH" in found
+
+
+def test_paths_that_reach_a_command_another_way_pass_as_the_limits_spec_7_3_states():
+    # 회귀가 아니다. 스펙 7.3이 적은 한계: 변수, 파이프라인, 개체 속성, 블록의 결과로 온 문자열은 인자가 아니다
+    script = "\n".join(
+        [
+            "$p = '\\\\z\\c$\\x'; Get-Content $p",
+            "'\\\\z\\c$\\x' | Get-Item",
+            "[pscustomobject]@{Path='\\\\z\\c$\\x'} | Get-Content",
+            "1 | ForEach-Object { '\\\\z\\c$\\x' } | Get-Content",
+        ]
+    )
+    verdict = check_query(script)
+    assert (verdict.ok, verdict.reasons) == (True, ())
+
+
+def test_every_argument_of_get_ciminstance_must_be_written_literally():
+    # 클래스 이름을 이어 붙여 만들면 이름 검사를 지나친다
+    assert_each_line_refused(
+        [
+            ("Get-CimInstance -ClassName ('Win32_Ping' + 'Status') -Filter \"Address='192.0.2.10'\"", "WMI_CLASS"),
+            ("Get-CimInstance ('Win32_Pro' + 'duct')", "WMI_CLASS"),
+            ("$c = 'Win32_Pro'; Get-CimInstance \"${c}duct\"", "WMI_CLASS"),
+            ("Get-CimInstance ('{0}_Product' -f 'Win32')", "WMI_CLASS"),
+            ("Get-CimInstance ('Win32_PingXStatus' -replace 'X', '') -Filter \"Address='192.0.2.10'\"", "WMI_CLASS"),
+            ("Get-CimInstance -Query ('SELECT * FROM Win32_Pro' + 'duct')", "WMI_CLASS"),
+            ("Get-CimInstance (('Win32', 'Product') -join '_')", "WMI_CLASS"),
+            ("Get-CimInstance \"Win32_Pro$('duct')\"", "WMI_CLASS"),
+        ]
+    )
+
+
+def test_a_variable_in_a_filter_or_index_of_on_a_string_is_refused_as_the_price_of_the_rulings():
+    assert_each_line_refused(
+        [
+            ('Get-CimInstance Win32_Process -Filter "ProcessId=$p"', "WMI_CLASS"),
+            ("'abc'.IndexOf('b')", "METHOD"),
+        ]
+    )
+
+
+def test_the_input_object_of_get_service_and_get_process_is_a_remote_parameter():
+    # 해시테이블이 MachineName을 가진 ServiceController로 바뀌어 묶인다
+    table = "@{ MachineName = '192.0.2.10'; ServiceName = 'spooler' }"
+    assert_each_line_refused(
+        [
+            (f"Get-Service -InputObject {table} | Select-Object Status", "PARAM_REMOTE"),
+            (f"Get-Service -InputObject:{table} | Select-Object Status", "PARAM_REMOTE"),
+            (f"$s = {table}; Get-Service -InputObject $s | Select-Object Status", "PARAM_REMOTE"),
+            (f"Get-Service -InputObject ([pscustomobject]{table}) | Select-Object Status", "PARAM_REMOTE"),
+            ("Get-Service -Inp $s", "PARAM_REMOTE"),
+            ("Get-Process -InputObject $s", "PARAM_REMOTE"),
+        ]
+    )
+
+
+def test_the_logging_preferences_and_transcript_are_not_assignable():
+    # 새 세션에 없어 변수 목록에 잡히지 않는다. 서버에서 뒤의 모든 명령이 이벤트 로그에 기록을 남기게 된다
+    names = [
+        "LogCommandLifecycleEvent",
+        "LogCommandHealthEvent",
+        "LogEngineLifecycleEvent",
+        "LogEngineHealthEvent",
+        "LogProviderLifecycleEvent",
+        "LogProviderHealthEvent",
+    ]
+    assert_each_line_refused(
+        [(f"${name} = $true; Get-Date", "ASSIGN") for name in names]
+        + [
+            ("Get-Date -OutVariable LogCommandLifecycleEvent", "PARAM_VARIABLE"),
+            ("foreach ($LogEngineHealthEvent in 1) { }", "ASSIGN"),
+            ("$Transcript = 'x'", "ASSIGN"),
+        ]
+    )
+
+
+def test_a_hashtable_key_is_plain_text_and_never_pstypename():
+    # PSTypeName은 개체에 다른 타입의 이름을 붙여, 속성을 읽을 때 그 타입에 딸린 코드가 돌게 한다
+    assert_each_line_refused(
+        [
+            ("[pscustomobject]@{ PSTypeName = 'System.IO.FileInfo'; FullName = 'C:\\x' }", "TYPE"),
+            ("[pscustomobject]@{ ('PSType' + 'Name') = 'System.IO.FileInfo'; FullName = 'C:\\x' }", "HASH_KEY"),
+            (
+                "$o = [pscustomobject]@{ PSTypeName = 'System.IO.FileInfo'; FullName = '\\\\z\\c$\\x.dll' }; "
+                "$o.VersionInfo",
+                "TYPE",
+            ),
+            (
+                "[pscustomobject]@{ PSTypeName = 'System.Management.ManagementObject#root\\cimv2\\Win32_Ping' + "
+                "'Status'; Address = 'x.example' } | Select-Object IPV4Address",
+                "TYPE",
+            ),
+            ("[ordered]@{ pstypename = 'x' }", "TYPE"),
+            ("@{ 'PSType­Name' = 'x' }", "TYPE"),
+            ("@{ $k = 1 }", "HASH_KEY"),
+            ('@{ "a$b" = 1 }', "HASH_KEY"),
+            ("@{ (1+1) = 1 }", "HASH_KEY"),
+        ]
+    )
+
+
+def test_index_of_is_no_longer_an_allowed_method():
+    # X509Certificate2Collection.IndexOf는 문자열 인자를 인증서 파일 경로로 읽는다
+    ok, found = codes("(Get-Item Cert:\\LocalMachine\\My).Certificates.IndexOf('\\\\z\\c$\\x.cer')")
+    assert not ok and "METHOD" in found
+
+
+def test_a_script_block_may_only_be_written_where_a_shaping_command_takes_it():
+    # 지연 바인딩은 값의 형식으로 정해진다. 블록이 괄호, 배열, 인덱스, 해시테이블, $( )를 거쳐 와도 같다
+    # (2026-11-11 이 PC에서 Get-Date -Date로 측정)
+    assert_each_line_refused(
+        [
+            ("'x' | Get-Content -Path (({ 'C:\\x' }, 1)[0])", "SCRIPT_BLOCK_ARG"),
+            ("'x' | Get-Content -Path @({ 'C:\\x' })[0]", "SCRIPT_BLOCK_ARG"),
+            ("'x' | Get-Content -Path (,{ 'C:\\x' })[0]", "SCRIPT_BLOCK_ARG"),
+            ("'x' | Get-Content -Path (@{ a = { 'C:\\x' } }).a", "SCRIPT_BLOCK_ARG"),
+            ("'x' | Get-Content -Path $(1 | Out-Null; { 'C:\\x' })", "SCRIPT_BLOCK_ARG"),
+            ("'x' | Get-Content -Path $(if (1) { { 'C:\\x' } })", "SCRIPT_BLOCK_ARG"),
+            ("$b = { 1 }", "SCRIPT_BLOCK_ARG"),
+            ("'a,b' -split { $_ -eq ',' }", "SCRIPT_BLOCK_ARG"),
+            ("Get-Process | Where-Object ({ $_.Id -gt 4 })", "SCRIPT_BLOCK_ARG"),
+            ("'x' | Get-Content -Path { '\\\\z\\c$\\x' }", "SCRIPT_BLOCK_ARG"),
+            ("'x' | Get-Content -Path ({ '\\\\z\\c$\\x' })", "SCRIPT_BLOCK_ARG"),
+            ("'x' | Get-Content -Path $({ '\\\\z\\c$\\x' })", "SCRIPT_BLOCK_ARG"),
+        ]
+    )
+
+
+def test_a_catch_type_is_a_plain_dotted_name():
+    # 어셈블리를 적은 catch 타입은 파서가 그 어셈블리를 찾게 한다
+    ok, found = codes("try { 1 } catch [T, hqprobe9x] { 2 }")
+    assert not ok and "TYPE" in found
+
+
+def test_the_controls_of_the_expression_review_pass():
+    script = "\n".join(
+        [
+            'Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -Property DeviceID, Size',
+            "Get-CimInstance -ClassName Win32_OperatingSystem -OperationTimeoutSec 5",
+            "Get-Service -Name spooler",
+            "Get-Process -Id 4",
+            "$event = Get-Date",
+            "Get-Process | Select-Object Name, @{ n = 'x'; e = { $_.Name } }",
+            "$h = @{ 'a b' = 1; 2 = 'x' }",
+            "[pscustomobject]@{ Name = 'x' }",
+            "Get-Process | Sort-Object { $_.Id }, { $_.Name }",
+            "Get-Process | Select-Object Name, @{ n = 'M'; e = { $_.WS / 1MB } }",
+            "Get-Process | Format-Table Name, { $_.Id }",
+            "Get-Process | Where-Object -FilterScript:{ $_.Id -gt 4 }",
+            "Get-Process | ForEach-Object -Begin { $n = 0 } -Process { $n++ } -End { $n }",
+            "switch (5) { { $_ -gt 3 } { 'big' } }",
+            "try { 1 } catch [System.UnauthorizedAccessException] { 2 }",
+        ]
+    )
+    verdict = check_query(script)
+    assert (verdict.ok, verdict.reasons) == (True, ())
 
 
 def test_every_opened_construct_keeps_the_pipeline_and_parameter_name_rules():
@@ -332,11 +506,7 @@ def test_every_opened_construct_keeps_the_pipeline_and_parameter_name_rules():
         ("while ($false) { Get-Service -Comp\u00aduterName z }", "PARAM_NAME"),
         ("switch (1) { 1 { Get-Service -ComputerName z } }", "PARAM_REMOTE"),
     ]
-    ok, found = codes_by_line("\n".join(script for script, _ in lines))
-    assert not ok
-    assert {n: code in found.get(n, set()) for n, (_, code) in enumerate(lines, 1)} == dict.fromkeys(
-        range(1, len(lines) + 1), True
-    )
+    assert_each_line_refused(lines)
 
 
 def test_other_ways_around_the_new_rules_are_refused():
@@ -356,11 +526,7 @@ def test_other_ways_around_the_new_rules_are_refused():
         ("$b = { Remove-Item x }", "COMMAND"),
         ("1 | Get-Date -Date { 1 }", "SCRIPT_BLOCK_ARG"),
     ]
-    ok, found = codes_by_line("\n".join(script for script, _ in lines))
-    assert not ok
-    assert {n: code in found.get(n, set()) for n, (_, code) in enumerate(lines, 1)} == dict.fromkeys(
-        range(1, len(lines) + 1), True
-    )
+    assert_each_line_refused(lines)
 
 
 def test_other_shapes_of_the_opened_kinds_pass():

@@ -204,27 +204,30 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 
 **인자**
 
-- 다른 컴퓨터로 가는 매개변수는 거절한다. 대상은 명령별로 실제 매개변수 정보에서 뽑는다: 이름이 `ComputerName`, `CimSession`, `Session`, `PSSession`, `Credential`인 매개변수와 그 별칭 전부다. 고정 목록으로는 빠진다. 2026-11-10 이 PC에서 허용 명령 66개를 훑었더니 `Get-CimInstance -ServerName`, `Get-HotFix -IPAddress`와 `-__Server`, `Get-NetIPConfiguration -PSComputerName`이 `ComputerName`이나 `CimSession`의 별칭이었다. 같은 이름이 다른 명령에서는 무해한 거르기 매개변수이므로(`Get-NetIPAddress -IPAddress`) 명령별로 판단한다. PowerShell은 이름과 별칭 모두 앞부분 줄임을 받으므로(`-PSP`가 `-PSPath`로 통했다) `-Comp`, `-Server` 같은 줄임도 거절한다. 판단이 모호하면 거절한다. 서버의 명령 버전에만 있는 별칭까지 보장하지는 않는다. 매개변수 이름에 영문, 숫자, 밑줄이 아닌 글자가 있으면 거절한다. PowerShell은 매개변수 이름을 비교할 때 소프트 하이픈 같은 보이지 않는 글자를 무시하므로, 그런 글자를 끼운 이름도 원래 매개변수로 묶인다(2026-11-11 이 PC에서 측정). 원격 매개변수가 파이프라인 입력으로도 묶이는 명령(`Get-CimInstance`, `Get-HotFix`, `Get-Service`, `Get-Process`, `Get-NetIPConfiguration` 등. 명령 정보에서 뽑는다)은 파이프라인의 맨 앞에만 쓸 수 있다. 앞 명령이 낸 개체의 `ServerName` 같은 속성이 주소로 묶이기 때문이다.
+- 다른 컴퓨터로 가는 매개변수는 거절한다. 대상은 명령별로 실제 매개변수 정보에서 뽑는다: 이름이 `ComputerName`, `CimSession`, `Session`, `PSSession`, `Credential`인 매개변수와 그 별칭 전부다. 고정 목록으로는 빠진다. 2026-11-10 이 PC에서 허용 명령 66개를 훑었더니 `Get-CimInstance -ServerName`, `Get-HotFix -IPAddress`와 `-__Server`, `Get-NetIPConfiguration -PSComputerName`이 `ComputerName`이나 `CimSession`의 별칭이었다. 같은 이름이 다른 명령에서는 무해한 거르기 매개변수이므로(`Get-NetIPAddress -IPAddress`) 명령별로 판단한다. PowerShell은 이름과 별칭 모두 앞부분 줄임을 받으므로(`-PSP`가 `-PSPath`로 통했다) `-Comp`, `-Server` 같은 줄임도 거절한다. 판단이 모호하면 거절한다. 서버의 명령 버전에만 있는 별칭까지 보장하지는 않는다. 매개변수 이름에 영문, 숫자, 밑줄이 아닌 글자가 있으면 거절한다. PowerShell은 매개변수 이름을 비교할 때 소프트 하이픈 같은 보이지 않는 글자를 무시하므로, 그런 글자를 끼운 이름도 원래 매개변수로 묶인다(2026-11-11 이 PC에서 측정). 원격 매개변수가 파이프라인 입력으로도 묶이는 명령(`Get-CimInstance`, `Get-HotFix`, `Get-Service`, `Get-Process`, `Get-NetIPConfiguration` 등. 명령 정보에서 뽑는다)은 파이프라인의 맨 앞에만 쓸 수 있다. 앞 명령이 낸 개체의 `ServerName` 같은 속성이 주소로 묶이기 때문이다. `Get-Service`와 `Get-Process`의 `-InputObject`도 거절한다. 해시테이블이 `MachineName`을 가진 개체로 바뀌어 묶인다(2026-11-11 이 PC에서 측정).
 - `ForEach-Object`와 `%`는 스크립트 블록 형태만 받는다. `% Delete`, `-MemberName Delete`는 메서드 호출이므로 거절한다.
 - 스플래팅(`@p`)은 거절한다.
-- 명령 인자의 글자가 `\\`나 `//`로 시작하면 거절한다. `::`를 포함한 인자는 `Registry::`로 시작할 때만 받는다. UNC 경로와 `FileSystem::\\z\c$\x` 같은 공급자 표기를 막고, 사용자별 자동 실행 조회에 흔한 `Registry::HKEY_USERS\...`는 남긴다. `-Path:\\z\x`처럼 매개변수에 붙은 값도 같다. 변수가 섞인 문자열(`"\\$h\c$"`)도 글자 부분이 `\\`로 시작하면 거절한다.
+- 명령 인자의 글자가 `\\`나 `//`로 시작하면 거절한다. `::`를 포함한 인자는 `Registry::`로 시작할 때만 받는다. UNC 경로와 `FileSystem::\\z\c$\x` 같은 공급자 표기를 막고, 사용자별 자동 실행 조회에 흔한 `Registry::HKEY_USERS\...`는 남긴다. `-Path:\\z\x`처럼 매개변수에 붙은 값도 같다. 변수가 섞인 문자열(`"\\$h\c$"`)도 글자 부분이 `\\`로 시작하면 거절한다. 인자 안의 괄호, 배열, `$(...)`에 적힌 문자열도 같다. 다듬기 명령에 준 스크립트 블록 안의 문자열은 인자가 아니라 코드이므로 보지 않고, 그 안에서 부르는 명령의 인자는 본다.
 - `function:`, `alias:`, `variable:`로 시작하는 인자는 거절한다. 함수 본문을 스크립트 블록으로 꺼내는 길이다.
+- 스크립트 블록은 다듬기 명령 열 개(`Where-Object`, `ForEach-Object`, `Select-Object`, `Sort-Object`, `Group-Object`, `Measure-Object`, `Compare-Object`, `Format-Table`, `Format-List`, `Format-Wide`)의 인자, 그 인자 안의 배열 항목과 해시테이블 값(계산 속성), `switch`의 조건 자리에만 적을 수 있다. 다른 자리에 적으면 거절한다. PowerShell은 다른 명령의 매개변수에 온 블록을 파이프라인 입력마다 실행해 그 결과를 매개변수 값으로 쓰고(`'x' | Get-Content -Path { '\\z\c$\x' }`), 블록이 괄호, 배열, 변수를 거쳐 와도 같다(2026-11-11 이 PC에서 `Get-Date -Date`로 측정). 열 개는 파이프라인 입력을 입력 개체로만 받는 명령이고, 명령 정보로 확인한다.
 - `switch -File`은 거절한다. 명령 인자가 아니어서 위의 경로 검사를 거치지 않는다.
-- 조회만 해도 서버를 바꾸거나 다른 컴퓨터에 닿는 WMI 클래스는 거절한다 **[판단]**: `Win32_Product`(조회하면 Windows Installer가 설치된 프로그램을 모두 점검하고 고칠 수 있다. Microsoft KB974524), `CIM_Product`(`Win32_Product`의 부모 클래스라 조회하면 같은 일이 일어난다), `Win32_PingStatus`(조회가 곧 ping이다). 널리 알려진 동작이며 직접 시험하지는 않았다. 이름이 스크립트의 문자열 어디에 있든 거절한다. 다른 클래스까지 보장하지는 않는다.
+- 조회만 해도 서버를 바꾸거나 다른 컴퓨터에 닿는 WMI 클래스는 거절한다 **[판단]**: `Win32_Product`(조회하면 Windows Installer가 설치된 프로그램을 모두 점검하고 고칠 수 있다. Microsoft KB974524), `CIM_Product`(`Win32_Product`의 부모 클래스라 조회하면 같은 일이 일어난다), `Win32_PingStatus`(조회가 곧 ping이다). 널리 알려진 동작이며 직접 시험하지는 않았다. 이름이 스크립트의 문자열 어디에 있든 거절한다. 다른 클래스까지 보장하지는 않는다. `Get-CimInstance`의 인자는 모두 글자 그대로 적어야 한다. 변수, 식, 변수가 든 문자열은 거절한다. 클래스 이름을 이어 붙여 만들면(`'Win32_Pro' + 'duct'`) 위의 이름 검사를 지나치기 때문이다.
 
 **문법**
 
 - 메서드는 이름이 글자 그대로 적힌 것만 받고, 인스턴스 메서드와 정적 메서드를 따로 판단한다. 검사는 객체 종류를 모르므로 인스턴스 목록에는 어떤 객체에서도 아무것도 바꾸지 않는 이름만 넣는다.
-- 인스턴스 메서드: `ToString ToXml Trim TrimStart TrimEnd PadLeft PadRight Split Substring ToLower ToUpper Contains StartsWith EndsWith IndexOf AddDays AddHours AddMinutes AddSeconds IsMatch Match Matches`.
-- **인스턴스 목록에 넣으면 안 되는 이름:** `Format`(`Win32_Volume.Format`은 볼륨을 포맷한다), `Replace`(`FileInfo.Replace`는 파일을 덮어쓴다), `GetType`(`[int].Assembly.GetType('System.IO.File')`로 아무 타입에나 닿는다). 글자 처리는 `-f`와 `-replace`로 한다.
+- 인스턴스 메서드: `ToString ToXml Trim TrimStart TrimEnd PadLeft PadRight Split Substring ToLower ToUpper Contains StartsWith EndsWith AddDays AddHours AddMinutes AddSeconds IsMatch Match Matches`.
+- **인스턴스 목록에 넣으면 안 되는 이름:** `Format`(`Win32_Volume.Format`은 볼륨을 포맷한다), `Replace`(`FileInfo.Replace`는 파일을 덮어쓴다), `GetType`(`[int].Assembly.GetType('System.IO.File')`로 아무 타입에나 닿는다), `IndexOf`(`X509Certificate2Collection.IndexOf`는 문자열 인자를 인증서 파일 경로로 읽는다. 2026-11-11 측정). 글자 처리는 `-f`와 `-replace`로 한다.
 - 타입은 허용 목록만 받는다: `int long double decimal bool string char datetime timespan array hashtable ordered pscustomobject regex math xml`.
+- 해시테이블의 키는 글자 그대로 적은 것만 받고, `PSTypeName` 키는 거절한다. 그 키는 개체에 다른 타입의 이름을 붙여, 속성을 읽을 때 그 타입에 딸린 코드(파일 버전 읽기, 이름 풀이 등)가 돌게 한다(2026-11-11 이 PC에서 측정).
 - 정적 메서드는 글자로 적은 타입에서 다음만 받는다: `[string]::Format Join IsNullOrEmpty IsNullOrWhiteSpace`, `[math]::Round Floor Ceiling Abs Max Min`, `[regex]::IsMatch Match Matches Replace`. `$t::Round(1)`처럼 변수로 정한 타입은 거절한다. 정적 속성(`[datetime]::Now`, `[math]::PI`)도 글자로 적은 허용 타입에서만 받는다.
 - `-as`는 오른쪽이 허용 타입을 글자로 적은 것(`$x -as [int]`)일 때만 받는다. 오른쪽이 문자열이나 변수면 PowerShell이 아무 타입의 생성자나 부른다. `'C:\x' -as 'System.IO.StreamWriter'`는 파일을 0바이트로 만든다(2026-11-10 임시 파일로 측정). `[int].Assembly.DefinedTypes`에서 고른 타입도 같았다.
 - 메서드와 타입 목록도 명령 목록처럼 처음 목록이다 **[판단]**. 같은 절차로 늘리고, 목록을 넘는 스크립트는 `run_script`로 실행한다. 미리 모아 둔 실제 스크립트가 없으므로, 쓰면서 10장의 거절 기록을 보고 늘린다.
-- 대입은 왼쪽이 평범한 지역 변수일 때만 받는다. 속성, 드라이브 변수(`$env:x`, `${C:\x}`), 범위 변수(`$global:x`), 자동 변수와 환경 설정 변수에는 대입할 수 없다. 자동 변수와 환경 설정 변수는 기억에 기대지 않고 새 PowerShell 세션의 변수 목록으로 정하며, 대소문자는 무시한다. 특히 `$PSDefaultParameterValues = @{'*:ComputerName'='z'}`는 뒤의 모든 명령을 다른 컴퓨터로 보낸다(2026-11-10 `Get-Date:Year`로 동작 확인). 예외는 `$ErrorActionPreference`, `$ProgressPreference`, `$null` 셋이다 **[판단]**. 앞의 둘은 Claude가 쓰는 스크립트에 흔하고 오류와 진행 표시 방식만 바꾸며, `$null`은 값을 버린다.
+- 대입은 왼쪽이 평범한 지역 변수일 때만 받는다. 속성, 드라이브 변수(`$env:x`, `${C:\x}`), 범위 변수(`$global:x`), 자동 변수와 환경 설정 변수에는 대입할 수 없다. 자동 변수와 환경 설정 변수는 기억에 기대지 않고 새 PowerShell 세션의 변수 목록으로 정하며, 대소문자는 무시한다. 특히 `$PSDefaultParameterValues = @{'*:ComputerName'='z'}`는 뒤의 모든 명령을 다른 컴퓨터로 보낸다(2026-11-10 `Get-Date:Year`로 동작 확인). 예외는 `$ErrorActionPreference`, `$ProgressPreference`, `$null` 셋이다 **[판단]**. 앞의 둘은 Claude가 쓰는 스크립트에 흔하고 오류와 진행 표시 방식만 바꾸며, `$null`은 값을 버린다. 새 세션에 없어 목록에 잡히지 않는 환경 설정 변수(`$LogCommandLifecycleEvent` 등 기록 설정 여섯 개와 `$Transcript`)는 따로 더한다.
 - `++`와 `--`도 평범한 지역 변수에만 받는다. `$f.Attributes++`는 파일 속성을 바꾼다(2026-11-06 측정). `$a, $f.IsReadOnly = 1, $true`처럼 왼쪽이 여럿인 대입은 거절한다.
 - 변수에 값을 넣는 다른 자리도 같은 규칙을 따른다: `foreach`의 반복 변수, `-OutVariable`, `-ErrorVariable`, `-WarningVariable`, `-InformationVariable`, `-PipelineVariable`. `foreach ($PSDefaultParameterValues in ...)`도 대입과 똑같이 동작했다(2026-11-10).
 - 변수 읽기에서 드라이브 형식은 `$env:`만 받는다. `$ExecutionContext`, `$Host`, `$PSCmdlet`은 거절한다. `$using:`도 거절한다. 이 PC의 변수를 서버로 가져가는 문법이다(8.2).
+- 변수, 멤버, 타입의 이름은 출력 가능한 ASCII 글자만 받는다. 매개변수 이름과 같은 이유다. 보이지 않는 글자나 비슷하게 생긴 글자를 끼운 이름이 서버에서 목록의 이름과 같은 것으로 통하는지에 기대지 않는다.
 - 파일로 가는 리디렉션(`>`, `>>`, `2>`)은 거절한다. `2>&1`과 `$null`로 버리는 것(`2>$null`, `>$null`)은 받는다. 버리기는 Claude가 쓰는 스크립트에 흔하다.
 - 함수, 클래스, `using`, `#requires`, `param`, `trap`, `dynamicparam`, `data`, `workflow`, `configuration` 정의는 거절한다.
 - 스크립트 블록과 문자열 안의 `$(...)`도 모두 같은 규칙으로 검사한다.
@@ -236,10 +239,10 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 - 조회만 해도 서버에 로그온 기록과 파일 접근 흔적이 남는다.
 - 조회도 서버에 부하를 준다. `Get-ChildItem C:\ -Recurse | Get-FileHash` 같은 스크립트는 확인 없이 돌고 시간 한도에서 멈춘다. 강제로 끝낸 경우에는 서버에서 더 돌 수 있다(8.3).
 - 메서드는 이름으로만 판단한다. 2026-11-06 이 PC의 모든 WMI 네임스페이스와 허용 명령 결과 표본을 훑어 7.2의 인스턴스 목록이 바꾸는 메서드와 겹치지 않음을 확인했다. 2026-11-10 허용 명령 31개의 결과로 다시 훑었을 때 글자, 날짜, 정규식 밖에서 겹친 것은 `EventLogRecord.ToXml`(읽기만 함) 하나였다. 서버에만 있는 클래스와 모듈까지 보장하지는 않는다.
-- 문자열은 변수에 담거나 이어 붙여 만들 수 있으므로 경로 검사는 글자로 적힌 인자만 막는다. `$p = '\\z\c$\x'; Get-Content $p`는 통과한다. NTLM 세션은 자격 증명을 다음 서버로 넘기지 않으므로 인증이 필요한 접근은 대체로 실패하지만, 여기에 기대지 않는다.
+- 문자열은 변수에 담거나 이어 붙여 만들 수 있으므로 경로 검사는 글자로 적힌 인자만 막는다. `$p = '\\z\c$\x'; Get-Content $p`는 통과한다. NTLM 세션은 자격 증명을 다음 서버로 넘기지 않으므로 인증이 필요한 접근은 대체로 실패하지만, 여기에 기대지 않는다. 파이프라인으로 넘긴 문자열(`'\\z\c$\x' | Get-Item`), 개체의 `Path` 속성(`[pscustomobject]@{Path='\\z\c$\x'} | Get-Content`), 인자 글자의 중간에 든 경로(`Get-WinEvent -FilterXml` 글자 속의 `file://\\z\...`)도 통과한다.
 - 알고도 남겨 둔 길이 있다. `function:` 경로를 문자열로 이어 만들어 넘기거나(`Get-Item ('func' + 'tion:x')`) 오류 기록의 `InvocationInfo.MyCommand`를 거치면 서버에 이미 있는 함수의 본문이 스크립트 블록으로 나온다(2026-11-10 측정). 인자를 줄 수 없고, CDXML 함수는 `ForEach-Object`로 돌릴 수 없었으므로 쓸모는 좁다고 본다.
 - 실행 단계에서 한 번 더 막는 방법으로 ConstrainedLanguage 모드를 시험했다(2026-11-10). 메서드와 타입을 쓰는 우회는 모두 막혔지만 `[math]::Round`, `[pscustomobject]`, `ToXml()`, `Get-NetAdapter` 같은 CDXML 명령 불러오기까지 막혀 조회에 쓸 수 없었다. 넣지 않는다 **[판단]**.
-- **정적 검사로는 끝까지 막지 못한다.** 검토할 때마다 새 우회가 나왔다: 2026-11-06에 메서드 이름(`Format`, `Replace`, `GetType`), `++`, 공급자 경로, 2026-11-10에 `-as`, 꺼낸 스크립트 블록, `$PSDefaultParameterValues`, 같은 날 두 번째 점검에서 매개변수 별칭(`-ServerName`), 파싱 단계의 경로 조회, 조회만으로 서버를 바꾸는 WMI 클래스, 2026-11-11 구현 검토에서 보이지 않는 글자를 끼운 매개변수 이름, 파이프라인 속성으로 묶이는 주소, `CIM_Product`. Claude가 평소 쓰는 조회에서 실수로 지우거나 바꾸는 일은 막지만, 일부러 꾸민 스크립트는 통과할 수 있다고 본다. 침해사고 때 서버 출력에 심긴 지시를 Claude가 따르는 경우가 여기에 든다. 검사는 사고를 줄이는 장치이며 보안 경계가 아니다(12장). 조회도 매번 확인받으려면 13.2의 `allow`에서 `mcp__hq__run_query`를 빼고 `ask`에 넣는다.
+- **정적 검사로는 끝까지 막지 못한다.** 검토할 때마다 새 우회가 나왔다: 2026-11-06에 메서드 이름(`Format`, `Replace`, `GetType`), `++`, 공급자 경로, 2026-11-10에 `-as`, 꺼낸 스크립트 블록, `$PSDefaultParameterValues`, 같은 날 두 번째 점검에서 매개변수 별칭(`-ServerName`), 파싱 단계의 경로 조회, 조회만으로 서버를 바꾸는 WMI 클래스, 2026-11-11 구현 검토에서 보이지 않는 글자를 끼운 매개변수 이름, 파이프라인 속성으로 묶이는 주소, `CIM_Product`, 같은 날 식 검사 검토에서 이어 붙여 만든 WMI 클래스 이름, 해시테이블로 만든 `-InputObject`, 새 세션에 없는 기록 설정 변수, `PSTypeName` 키, 인증서 묶음의 `IndexOf`, 배열과 괄호에 숨긴 스크립트 블록. Claude가 평소 쓰는 조회에서 실수로 지우거나 바꾸는 일은 막지만, 일부러 꾸민 스크립트는 통과할 수 있다고 본다. 침해사고 때 서버 출력에 심긴 지시를 Claude가 따르는 경우가 여기에 든다. 검사는 사고를 줄이는 장치이며 보안 경계가 아니다(12장). 조회도 매번 확인받으려면 13.2의 `allow`에서 `mcp__hq__run_query`를 빼고 `ask`에 넣는다.
 
 ## 8. 실행
 
@@ -516,6 +519,12 @@ Get-CimInstance Win32_Product
 Get-CimInstance -Query "SELECT * FROM Win32_PingStatus WHERE Address='z'"
 Get-SmbConnection | Get-CimInstance Win32_OperatingSystem
 Get-CimInstance CIM_Product
+Get-CimInstance -ClassName ('Win32_Ping' + 'Status') -Filter "Address='192.0.2.10'"
+Get-Service -InputObject @{ MachineName = '192.0.2.10'; ServiceName = 'spooler' } | Select-Object Status
+$LogCommandLifecycleEvent = $true; Get-Date
+[pscustomobject]@{ PSTypeName = 'System.IO.FileInfo'; FullName = 'C:\x' }
+(Get-Item Cert:\LocalMachine\My).Certificates.IndexOf('\\z\c$\x.cer')
+'x' | Get-Content -Path (({ 'C:\x' }, 1)[0])
 ```
 
 - 파서를 부르지 않고 거절해야 하는 표. 검사 프로세스가 뜨지 않음을 확인한다.

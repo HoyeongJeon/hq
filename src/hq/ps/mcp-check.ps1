@@ -14,7 +14,7 @@ $hqSessionVariables = [string[]]((Get-Variable).Name -ne 'hqTemplate')
 #
 # 이유 코드: PARSE_ERROR NODE DEFINITION INVOKE COMMAND EXTERNAL_ARGS PIPELINE_INPUT PARAM_NAME PARAM_REMOTE
 # PARAM_VARIABLE FOREACH_FORM SCRIPT_BLOCK_ARG PATH SPLAT REDIRECT WMI_CLASS VARIABLE USING ASSIGN AS TYPE METHOD
-# SWITCH_FILE. Python이 PARSER_HAZARD와 CHECK_FAILED를 더한다.
+# SWITCH_FILE HASH_KEY. Python이 PARSER_HAZARD와 CHECK_FAILED를 더한다.
 #
 # 입력(표준 입력, ASCII JSON): {"script", "rules"}. rules는 src/hq/mcp/query_rules.json이다.
 # 출력: 표준 출력에 {"ok", "reasons": [{"code", "message", "line"}]} 한 줄을 쓰고 종료 코드 0으로 끝난다.
@@ -63,6 +63,8 @@ foreach ($hqProperty in $hqRules.static_methods.PSObject.Properties) {
 # 스크립트 블록을 인자로 받아도 되는 명령. 파이프라인으로 입력 객체만 받으므로 블록이 지연 바인딩되어도 그 결과는
 # 다듬을 객체가 될 뿐이다(tests/integration/test_mcp_scans_ps.py가 이 PC의 명령 정보로 확인한다)
 $hqScriptBlockCommands = New-HqSet $hqRules.script_block_commands
+# 인자를 모두 글자 그대로 적어야 하는 명령(WMI 클래스와 쿼리를 받는 Get-CimInstance)
+$hqLiteralArgumentCommands = New-HqSet $hqRules.literal_argument_commands
 # ForEach-Object를 메서드 호출 형태(PropertyAndMethodSet)로 바꾸는 매개변수와 그 별칭. ArgumentList의 별칭 Args는
 # 2026-11-11 이 PC의 명령 정보에서 보았다. -Args를 주면 스크립트 블록의 글자가 MemberName이 된다
 $hqForEachMemberParams = [string[]]@('MemberName', 'ArgumentList', 'Args')
@@ -178,59 +180,128 @@ function Test-HqPathString($string) {
     if (-not $hqPathSeen.Add($string)) { return }
     if ((Test-HqBlockedPath $string.Value) -or (Test-HqBlockedPath (Get-HqAsciiCopy $string.Value))) {
         Add-HqReason 'PATH' ('UNC 경로(\\, //), 공급자 표기(::, Registry::만 받음), function:, alias:, variable: ' +
-            '경로는 인자와 스크립트 블록 안에 쓸 수 없습니다.') $string
+            '경로는 명령 인자로 쓸 수 없습니다.') $string
     }
 }
 
-function Test-HqPaths($argument) {
-    # 인자(붙은 값 포함) 안의 문자열 상수와 변수가 섞인 문자열. 안쪽 스크립트 블록 안도 본다(FindAll의 둘째 인자)
+function Test-HqPaths($argument, [bool]$takesBlocks) {
+    # 인자(붙은 값 포함) 안의 문자열 상수와 변수가 섞인 문자열. 괄호, 배열, $( ) 안도 본다. 다듬기 명령에 준 스크립트
+    # 블록 안의 문자열은 인자가 아니라 코드이므로 보지 않는다(그 안의 명령은 따로 검사된다). 다른 명령의 인자 안에
+    # 든 스크립트 블록은 안도 본다(Get-Content (1 | ForEach-Object { '\\z\x' })). FindAll의 둘째 인자가 그 구별이다
     $strings = $argument.FindAll({
         param($node)
         $node -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
         $node -is [System.Management.Automation.Language.ExpandableStringExpressionAst]
-    }, $true)
+    }, -not $takesBlocks)
     foreach ($string in $strings) { Test-HqPathString $string }
 }
 
-function Test-HqString($string) {
-    Test-HqWmiClass $string
-    # 스크립트 블록 안의 문자열은 어디에 있든 경로 규칙도 따른다. 블록의 결과는 지연 바인딩(매개변수 값으로 준 블록),
-    # 파이프라인, 계산 속성을 거쳐 다른 명령의 경로 매개변수에 닿는다. 변수에 담은 블록도 지연 바인딩된다
-    for ($parent = $string.Parent; $null -ne $parent; $parent = $parent.Parent) {
-        if ($parent -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) {
-            Test-HqPathString $string
-            return
+function Test-HqLiteralArgument($value) {
+    # 글자 그대로 적은 인자: 문자열 상수(맨 글자, 변수 없는 따옴표 글자, 펼치지 않는 here-string), 숫자 상수, 또는
+    # 그것들만으로 된 배열
+    if ($value -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+        foreach ($item in $value.Elements) {
+            if (-not (Test-HqLiteralArgument $item)) { return $false }
         }
+        return $true
     }
+    return $value -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+        ($value -is [System.Management.Automation.Language.ConstantExpressionAst] -and $value.Value -is [ValueType])
 }
 
-function Test-HqBlockValue($value) {
-    # 값이 글자로 적은 스크립트 블록이다({ }, ({ }), $({ })). 지연 바인딩은 값의 형식으로 정해지므로 괄호와 하위 식으로
-    # 감싸도, 변수에 담거나 파이프라인이 내놓아도 된다(2026-11-11 이 PC에서 Get-Date -Date로 측정). 글자로 보이는 모양만
-    # 여기서 막고, 나머지는 블록 안의 문자열이 모두 경로 규칙을 따르는 것(Test-HqString)으로 막는다
-    while ($value -is [System.Management.Automation.Language.ParenExpressionAst] -or
-        $value -is [System.Management.Automation.Language.SubExpressionAst]) {
-        if ($value -is [System.Management.Automation.Language.ParenExpressionAst]) {
-            $pipeline = $value.Pipeline
-        } elseif ($value.SubExpression.Statements.Count -eq 1) {
-            $pipeline = $value.SubExpression.Statements[0]
-        } else {
-            return $false
-        }
-        if ($pipeline -isnot [System.Management.Automation.Language.PipelineAst] -or
-            $pipeline.PipelineElements.Count -ne 1 -or
-            $pipeline.PipelineElements[0] -isnot [System.Management.Automation.Language.CommandExpressionAst]) {
-            return $false
-        }
-        $value = $pipeline.PipelineElements[0].Expression
-    }
-    return $value -is [System.Management.Automation.Language.ScriptBlockExpressionAst]
+function Add-HqLiteralArgumentReason($element, [string]$name) {
+    Add-HqReason 'WMI_CLASS' ("$($name)의 인자는 모두 글자 그대로 적어야 합니다. 검사가 클래스 이름을 읽을 수 있어야 " +
+        '합니다. 변수, 식, 변수가 든 문자열은 쓸 수 없습니다.') $element
 }
 
-function Add-HqBlockArgumentReason($element) {
-    Add-HqReason 'SCRIPT_BLOCK_ARG' ('스크립트 블록은 Where-Object, ForEach-Object와 Select-Object, Sort-Object 같은 ' +
-        '다듬기 명령의 인자로만 쓸 수 있습니다. 다른 명령에 주면 파이프라인 입력마다 실행되어 그 결과가 매개변수 ' +
-        '값이 됩니다.') $element
+function Resolve-HqCommandName($command) {
+    # 이름을 글자 그대로 적은 명령의 이름(줄임말은 명령으로 바꾼다). & . 호출이거나 이름이 글자가 아니면 $null
+    $first = $command.CommandElements[0]
+    if ($command.InvocationOperator -ne [System.Management.Automation.Language.TokenKind]::Unknown -or
+        $first -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or
+        $first.StringConstantType -ne [System.Management.Automation.Language.StringConstantType]::BareWord) {
+        return $null
+    }
+    $name = $first.Value
+    if ($hqAliases.ContainsKey($name)) { $name = [string]$hqAliases[$name] }
+    return $name
+}
+
+function Test-HqBlockPlace($block) {
+    # 스크립트 블록을 적을 수 있는 자리: 다듬기 명령의 인자(요소 또는 매개변수에 붙은 값), 그 인자 안의 배열 항목과
+    # 해시테이블 값(계산 속성. 사이에 괄호, $( ), @( ), 인덱스, 멤버, 연산자가 없다), switch의 조건. 다른 자리의 블록은
+    # 다른 명령에 닿아 지연 바인딩될 수 있다. 지연 바인딩은 값의 형식으로 정해지므로 괄호, 배열, 변수를 거쳐 와도
+    # 된다(2026-11-11 이 PC에서 Get-Date -Date로 측정)
+    $parent = $block.Parent
+    if ($parent -is [System.Management.Automation.Language.SwitchStatementAst]) {
+        foreach ($clause in $parent.Clauses) {
+            if ([object]::ReferenceEquals($clause.Item1, $block)) { return }
+        }
+    }
+    # 계산 속성의 겹(배열 항목, 해시테이블 값)을 거슬러 올라간다
+    $node = $block
+    while ($true) {
+        $parent = $node.Parent
+        if ($parent -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+            $node = $parent
+            continue
+        }
+        # 해시테이블 값은 문장이다: 해시테이블 > 파이프라인(요소 하나) > 식 문장 > 블록
+        $pipeline = $null
+        if ($parent -is [System.Management.Automation.Language.CommandExpressionAst] -and
+            $parent.Redirections.Count -eq 0) {
+            $pipeline = $parent.Parent
+        }
+        if ($pipeline -is [System.Management.Automation.Language.PipelineAst] -and
+            $pipeline.PipelineElements.Count -eq 1 -and
+            $pipeline.Parent -is [System.Management.Automation.Language.HashtableAst]) {
+            $isValue = $false
+            foreach ($pair in $pipeline.Parent.KeyValuePairs) {
+                if ([object]::ReferenceEquals($pair.Item2, $pipeline)) { $isValue = $true }
+            }
+            if ($isValue) {
+                $node = $pipeline.Parent
+                continue
+            }
+        }
+        break
+    }
+    $parent = $node.Parent
+    $command = $null
+    if ($parent -is [System.Management.Automation.Language.CommandParameterAst] -and
+        [object]::ReferenceEquals($parent.Argument, $node)) {
+        $command = $parent.Parent
+    } elseif ($parent -is [System.Management.Automation.Language.CommandAst] -and
+        -not [object]::ReferenceEquals($parent.CommandElements[0], $node)) {
+        $command = $parent
+    }
+    if ($command -is [System.Management.Automation.Language.CommandAst]) {
+        $name = Resolve-HqCommandName $command
+        if ($null -ne $name -and $hqScriptBlockCommands.Contains($name)) { return }
+    }
+    Add-HqReason 'SCRIPT_BLOCK_ARG' ('스크립트 블록은 다듬기 명령(Where-Object, ForEach-Object, Select-Object, ' +
+        'Sort-Object 등)의 인자와 그 계산 속성, switch의 조건 자리에만 적을 수 있습니다. 다른 자리의 블록은 다른 ' +
+        '명령에 닿아 파이프라인 입력마다 실행되고, 그 결과가 매개변수 값이 될 수 있습니다.') $block
+}
+
+function Test-HqHashtable($table) {
+    # 키는 글자 그대로 적은 문자열이나 숫자. PSTypeName 키는 개체에 다른 타입의 이름을 붙여, 속성을 읽을 때 그 타입에
+    # 딸린 코드(types.ps1xml의 속성)가 돌게 한다(2026-11-11 검토자 측정)
+    foreach ($pair in $table.KeyValuePairs) {
+        $key = $pair.Item1
+        $plain = $key -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+            ($key -is [System.Management.Automation.Language.ConstantExpressionAst] -and $key.Value -is [ValueType])
+        if (-not $plain) {
+            Add-HqReason 'HASH_KEY' '해시테이블의 키는 글자 그대로 적어야 합니다. 변수, 식, 변수가 든 문자열은 쓸 수 없습니다.' $key
+            continue
+        }
+        $text = [string]$key.Value
+        if ([string]::Equals($text, 'PSTypeName', [StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals((Get-HqAsciiCopy $text), 'PSTypeName', [StringComparison]::OrdinalIgnoreCase)) {
+            Add-HqReason 'TYPE' ('PSTypeName 키는 쓸 수 없습니다. 개체에 다른 타입의 동작을 붙여, 속성을 읽을 때 그 ' +
+                '타입의 코드가 돕니다.') $key
+        }
+    }
 }
 
 function Test-HqExternalArgs($allowed, [string[]]$texts) {
@@ -298,6 +369,9 @@ function Test-HqCommand($command) {
     if ($hqRemoteAliases.ContainsKey($name)) { $remote = $remote + [string[]]@($hqRemoteAliases[$name]) }
     $isForEach = [string]::Equals($name, 'ForEach-Object', [StringComparison]::OrdinalIgnoreCase)
     $takesBlocks = $hqScriptBlockCommands.Contains($name)
+    # WMI 클래스나 쿼리를 받는 명령(Get-CimInstance)은 인자를 모두 글자 그대로 적는다. 이어 붙여 만든 클래스 이름은
+    # WMI_CLASS 규칙이 읽을 수 없다
+    $literalOnly = $hqLiteralArgumentCommands.Contains($name)
     for ($i = 1; $i -lt $elements.Count; $i++) {
         $element = $elements[$i]
         if ($element -is [System.Management.Automation.Language.CommandParameterAst]) {
@@ -332,10 +406,10 @@ function Test-HqCommand($command) {
                 if ($memberForm -or $notBlock) { Add-HqForEachReason $element }
             }
             # 7. 붙은 값의 경로
-            if ($null -ne $value) { Test-HqPaths $value }
-            # 9. 붙은 값이 스크립트 블록이면 지연 바인딩이다
-            if ($null -ne $value -and -not $takesBlocks -and (Test-HqBlockValue $value)) {
-                Add-HqBlockArgumentReason $value
+            if ($null -ne $value) { Test-HqPaths $value $takesBlocks }
+            # 9. 글자 그대로만 받는 명령의 붙은 값
+            if ($null -ne $value -and $literalOnly -and -not (Test-HqLiteralArgument $value)) {
+                Add-HqLiteralArgumentReason $value $name
             }
             continue
         }
@@ -348,10 +422,10 @@ function Test-HqCommand($command) {
         }
         # 8. 스플래팅(@p)은 변수의 규칙(Test-HqVariable)이 거절한다
         # 7. 인자의 경로
-        Test-HqPaths $element
-        # 9. 스크립트 블록 인자는 다듬기 명령만 받는다. 다른 명령에서는 지연 바인딩되어 파이프라인 입력마다 실행되고,
-        # 그 결과가 매개변수 값(경로, 이름)이 된다(2026-11-11 이 PC에서 Get-Date -Date { }로 측정)
-        if (-not $takesBlocks -and (Test-HqBlockValue $element)) { Add-HqBlockArgumentReason $element }
+        Test-HqPaths $element $takesBlocks
+        # 9. 글자 그대로만 받는 명령의 인자
+        if ($literalOnly -and -not (Test-HqLiteralArgument $element)) { Add-HqLiteralArgumentReason $element $name }
+        # 스크립트 블록 인자를 받는 명령인지는 블록 쪽의 규칙(Test-HqBlockPlace)이 본다
     }
 }
 
@@ -404,9 +478,13 @@ function Test-HqType($node, $typeName) {
 }
 
 function Test-HqTypeConstraint($constraint) {
-    # 변환([int]$x)의 형식도 이것으로 본다. catch [형식]의 형식은 잡을 예외를 고를 뿐이므로 보지 않는다
+    # 변환([int]$x)의 형식도 이것으로 본다. catch [형식]의 형식은 잡을 예외를 고를 뿐이므로 목록과 견주지 않지만,
+    # 점으로 이은 영문, 숫자, 밑줄 이름만 받는다. 어셈블리를 적은 이름은 파서가 그 어셈블리를 찾게 한다(검토자 측정)
     if ($constraint.Parent -isnot [System.Management.Automation.Language.CatchClauseAst]) {
         Test-HqType $constraint $constraint.TypeName
+    } elseif (-not [regex]::IsMatch($constraint.TypeName.FullName, '\A[A-Za-z0-9_.]+\z')) {
+        Add-HqReason 'TYPE' ('catch의 형식은 점으로 이은 이름([System.IO.IOException])만 쓸 수 있습니다. 어셈블리, ' +
+            '제네릭, 배열 표기는 안 됩니다.') $constraint
     }
 }
 
@@ -543,11 +621,13 @@ foreach ($hqKind in 'PipelineAst', 'CommandExpressionAst', 'ConstantExpressionAs
 foreach ($hqKind in 'IfStatementAst', 'WhileStatementAst', 'DoWhileStatementAst', 'DoUntilStatementAst',
     'ForStatementAst', 'TryStatementAst', 'CatchClauseAst', 'ThrowStatementAst', 'ReturnStatementAst',
     'BreakStatementAst', 'ContinueStatementAst', 'ExitStatementAst', 'ParenExpressionAst', 'SubExpressionAst',
-    'ArrayExpressionAst', 'HashtableAst', 'IndexExpressionAst', 'ScriptBlockExpressionAst', 'ConvertExpressionAst') {
+    'ArrayExpressionAst', 'IndexExpressionAst', 'ConvertExpressionAst') {
     $hqKinds.Add($hqKind, $null)
 }
-$hqKinds.Add('StringConstantExpressionAst', { param($node) Test-HqString $node })
-$hqKinds.Add('ExpandableStringExpressionAst', { param($node) Test-HqString $node })
+$hqKinds.Add('HashtableAst', { param($node) Test-HqHashtable $node })
+$hqKinds.Add('ScriptBlockExpressionAst', { param($node) Test-HqBlockPlace $node })
+$hqKinds.Add('StringConstantExpressionAst', { param($node) Test-HqWmiClass $node })
+$hqKinds.Add('ExpandableStringExpressionAst', { param($node) Test-HqWmiClass $node })
 $hqKinds.Add('MergingRedirectionAst', { param($node) Test-HqMergingRedirection $node })
 $hqKinds.Add('FileRedirectionAst', { param($node) Test-HqFileRedirection $node })
 $hqKinds.Add('CommandAst', { param($node) Test-HqCommand $node })

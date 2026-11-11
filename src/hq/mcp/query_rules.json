@@ -39,7 +39,9 @@
   "remote_param_aliases": {
     "Get-CimInstance": ["ServerName"],
     "Get-HotFix": ["__Server", "IPAddress"],
-    "Get-NetIPConfiguration": ["PSComputerName"]
+    "Get-NetIPConfiguration": ["PSComputerName"],
+    "Get-Service": ["InputObject"],
+    "Get-Process": ["InputObject"]
   },
   "pipeline_remote_commands": [
     "Get-CimInstance", "Get-HotFix", "Get-NetIPConfiguration", "Get-Process", "Get-Service"
@@ -48,13 +50,14 @@
     "Where-Object", "ForEach-Object", "Select-Object", "Sort-Object", "Group-Object", "Measure-Object",
     "Compare-Object", "Format-Table", "Format-List", "Format-Wide"
   ],
+  "literal_argument_commands": ["Get-CimInstance"],
   "variable_params": [
     "OutVariable", "ov", "ErrorVariable", "ev", "WarningVariable", "wv", "InformationVariable", "iv",
     "PipelineVariable", "pv"
   ],
   "instance_methods": [
     "ToString", "ToXml", "Trim", "TrimStart", "TrimEnd", "PadLeft", "PadRight", "Split", "Substring", "ToLower",
-    "ToUpper", "Contains", "StartsWith", "EndsWith", "IndexOf", "AddDays", "AddHours", "AddMinutes", "AddSeconds",
+    "ToUpper", "Contains", "StartsWith", "EndsWith", "AddDays", "AddHours", "AddMinutes", "AddSeconds",
     "IsMatch", "Match", "Matches"
   ],
   "static_methods": {
@@ -69,7 +72,8 @@
   "assignable_exceptions": ["ErrorActionPreference", "ProgressPreference", "null"],
   "extra_protected_variables": [
     "_", "PSItem", "Matches", "LASTEXITCODE", "foreach", "switch", "this", "OFS", "PSModuleAutoLoadingPreference",
-    "PSSenderInfo"
+    "PSSenderInfo", "LogCommandHealthEvent", "LogCommandLifecycleEvent", "LogEngineHealthEvent",
+    "LogEngineLifecycleEvent", "LogProviderHealthEvent", "LogProviderLifecycleEvent", "Transcript"
   ],
   "blocked_read_variables": ["ExecutionContext", "Host", "PSCmdlet"],
   "blocked_wmi_classes": ["Win32_Product", "CIM_Product", "Win32_PingStatus"],
