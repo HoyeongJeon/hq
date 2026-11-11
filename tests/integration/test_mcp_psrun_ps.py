@@ -1,15 +1,15 @@
 """hq.mcp.psrun을 이 PC의 실제 powershell.exe로 확인한다. 템플릿은 시험이 tmp_path에 쓰는 작은 파일이고, 원격이나
 네트워크 명령은 쓰지 않는다."""
 
-import ctypes
 import subprocess
+import threading
 import time
-from ctypes import wintypes
 from pathlib import Path
 
 import pytest
+from procs import end_tree, pid_alive
 
-from hq.mcp.psrun import loader_argv, run_ps_template
+from hq.mcp.psrun import LOADER_FAILED, loader_argv, run_ps_template
 
 pytestmark = pytest.mark.integration
 READ = "$p = [Console]::In.ReadToEnd() | ConvertFrom-Json\n"
@@ -23,36 +23,30 @@ def template(tmp_path: Path, body: str) -> Path:
     return path
 
 
-def pid_alive(pid: int) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not handle:
-        return False
-    try:
-        code = wintypes.DWORD()
-        kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-        return code.value == 259  # STILL_ACTIVE
-    finally:
-        kernel32.CloseHandle(handle)
-
-
 @pytest.fixture
 def end_grandchild(tmp_path):
     """시험이 실패해도 템플릿이 띄운 손자 프로세스를 남기지 않는다. 템플릿은 그 pid를 tmp_path / "child.pid"에 쓴다."""
     yield
     pid_file = tmp_path / "child.pid"
     pid = pid_file.read_text().strip() if pid_file.exists() else ""
-    if pid.isdigit() and pid_alive(int(pid)):
-        subprocess.run(
-            ["taskkill", "/PID", pid, "/T", "/F"],
-            capture_output=True,
-            check=False,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+    if pid.isdigit():
+        end_tree(int(pid))
+
+
+@pytest.fixture
+def started(monkeypatch):
+    """run_ps_template가 띄운 프로세스를 모은다. 시험이 실패하거나 호출이 돌아오지 않아도 끝에 트리째 끝낸다."""
+    procs = []
+    real = subprocess.Popen
+
+    def record(argv, **kwargs):
+        procs.append(real(argv, **kwargs))
+        return procs[-1]
+
+    monkeypatch.setattr("hq.mcp.psrun.subprocess.Popen", record)
+    yield procs
+    for proc in procs:
+        end_tree(proc.pid)
 
 
 def test_the_payload_arrives_exactly_including_hangul_quotes_and_20000_characters(tmp_path):
@@ -79,7 +73,7 @@ def test_megabytes_on_both_streams_do_not_block_and_only_40000_characters_are_ke
     result = run_ps_template(template(tmp_path, body), {}, timeout=60)
     assert result.code == 0 and len(result.stdout) + len(result.stderr) == 40_000
     assert result.total_chars == 2 * 3000 * 1001  # 줄바꿈은 한 글자로 센다(\r\n → \n)
-    assert "�" not in result.stdout + result.stderr
+    assert "\ufffd" not in result.stdout + result.stderr
 
 
 @pytest.mark.usefixtures("end_grandchild")
@@ -98,10 +92,53 @@ def test_a_script_that_runs_too_long_is_killed_with_its_children(tmp_path):
     assert not pid_alive(int(pid_file.read_text()))  # 손자 프로세스도 끝났다
 
 
-def test_powershells_own_error_stream_marker_is_cut_off(tmp_path):
-    body = READ + "[Console]::Error.WriteLine('오류 줄')\nWrite-Error 'x'\n[Environment]::Exit(1)\n"
+def test_a_template_that_never_reads_its_input_is_still_ended_by_the_timeout(tmp_path, started):
+    # 값은 ASCII JSON으로 120,000바이트라 파이프 버퍼보다 크다. 템플릿이 읽지 않아 쓰기가 막혀도 timeout은 지킨다.
+    # 호출을 따로 돌려, 돌아오지 않아도 시험이 멈추지 않고 started가 프로세스를 끝내게 한다
+    results = []
+    call = threading.Thread(
+        target=lambda: results.append(
+            run_ps_template(template(tmp_path, "Start-Sleep 60\n"), {"script": "가" * 20_000}, timeout=4)
+        ),
+        daemon=True,
+    )
+    call.start()
+    call.join(15)
+    assert not call.is_alive(), "timeout이 지나도 15초 안에 돌아오지 않았다"
+    assert results[0].killed
+
+
+def test_powershells_own_records_are_removed_and_the_lines_around_them_kept(tmp_path):
+    # [Environment]::Exit 없이 끝나야 PowerShell이 #< CLIXML 줄 뒤에 <Objs> 덩어리까지 쓴다
+    body = (
+        READ
+        + "[Console]::Error.WriteLine('앞')\n"
+        + "Write-Error x -ErrorAction Continue\n"
+        + "Write-Warning y\n"
+        + "[Console]::Error.WriteLine('뒤')\n"
+    )
     result = run_ps_template(template(tmp_path, body), {}, timeout=30)
-    assert result.stderr.strip() == "오류 줄"
+    assert result.stderr.splitlines() == ["앞", "뒤"]
+    assert "CLIXML" not in result.stderr and "<Objs" not in result.stderr
+    assert result.total_chars == len("앞\n뒤\n")  # 지운 글자는 세지 않는다
+
+
+@pytest.mark.parametrize(
+    ("body", "error"),
+    [
+        (READ + "throw 'secret-PROBE'\n", "System.Management.Automation.RuntimeException, 줄 2"),
+        # 로더의 5째 줄이 템플릿을 읽어 스크립트 블록을 만든다. 문법 오류와 없는 파일은 그 줄에서 난다
+        (READ + "if ('secret-PROBE' {\n", "System.Management.Automation.MethodInvocationException, 줄 5"),
+        (None, "System.Management.Automation.MethodInvocationException, 줄 5"),
+    ],
+    ids=["throws", "syntax-error", "missing-file"],
+)
+def test_a_template_that_fails_to_load_or_throws_ends_with_one_plain_line(tmp_path, body, error):
+    path = template(tmp_path, body) if body is not None else tmp_path / "secret-PROBE 없음.ps1"
+    result = run_ps_template(path, {"secret": "secret-PROBE"}, timeout=30)
+    assert result.code == LOADER_FAILED and not result.killed
+    assert result.stderr == f"템플릿을 실행하지 못했습니다 ({error})\n"  # 예외 메시지는 값을 옮길 수 있어 넣지 않는다
+    assert "secret-PROBE" not in result.stdout + result.stderr and "CLIXML" not in result.stderr
 
 
 def test_the_command_line_holds_no_script_and_no_payload(tmp_path):

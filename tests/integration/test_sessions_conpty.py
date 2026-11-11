@@ -9,6 +9,7 @@ from ctypes import wintypes
 
 import pytest
 from fakes import wait_for
+from procs import pid_alive
 from ptyrun import DA1_ANSWER, DA1_QUERY
 
 from hq.bootstrap import NOT_READY_CODE, READY_MARKER, encoded_argv, powershell_exe, prelude
@@ -62,23 +63,6 @@ def cleanup():
     yield managers.append
     for manager in managers:
         manager.close_all()
-
-
-def pid_alive(pid: int) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not handle:
-        return False
-    try:
-        code = wintypes.DWORD()
-        kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-        return code.value == 259  # STILL_ACTIVE
-    finally:
-        kernel32.CloseHandle(handle)
 
 
 def session_warnings(caplog) -> list[str]:
