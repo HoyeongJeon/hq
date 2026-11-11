@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "disableAutoMode": "disable",
+    "blockReadsOutsideWorkingDirectories": true,
+    "blockWritesOutsideWorkingDirectories": true,
+    "allow": ["mcp__hq__list_servers", "mcp__hq__run_query"],
+    "ask": ["mcp__hq__run_script"],
+    "deny": [
+      "Read(~/AppData/Local/hq/**)", "Edit(~/AppData/Local/hq/**)",
+      "Bash(*Invoke-Command*)", "Bash(*New-PSSession*)", "Bash(*Enter-PSSession*)", "Bash(*mcp-access*)", "Bash(*.dpapi*)",
+      "Bash(*inventory.json*)", "Bash(*hq.mcp*)",
+      "PowerShell(*Invoke-Command*)", "PowerShell(*New-PSSession*)", "PowerShell(*Enter-PSSession*)",
+      "PowerShell(*mcp-access*)", "PowerShell(*.dpapi*)", "PowerShell(*inventory.json*)", "PowerShell(*hq.mcp*)"
+    ]
+  }
+}
