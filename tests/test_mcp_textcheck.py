@@ -54,6 +54,11 @@ def test_a_run_of_comments_after_using_is_checked_at_once():
         ("\\\\10.0.1.21\\c$", True),
         ("10.0.1.21:445", True),
         ("http://a.10.0.1.21.sslip.io/x", True),
+        # 숫자로 끝나는 이름 조각 뒤의 주소. 그 조각 앞이 영문, _, -이면 이름이다
+        ("a1.10.0.1.21.nip.io", True),
+        ("web01.10.0.1.21.sslip.io", True),
+        ("x.5.10.0.1.21", True),
+        ("srv-1.10.0.1.21", True),
         ("Get-Date # 10.0.1.210", False),
         ("110.0.1.21", False),
         ("10.0.1.21.5", False),
@@ -61,10 +66,22 @@ def test_a_run_of_comments_after_using_is_checked_at_once():
         ("10.0.1.210", False),
         ("5.10.0.1.21", False),
         ("1.2.10.0.1.21", False),
+        (" 5.10.0.1.21", False),
+        ("(5.10.0.1.21)", False),
     ],
 )
 def test_a_forbidden_ip_is_found_only_as_a_whole_address(script, found):
     assert (never_ip_in(script, ["10.0.1.21"]) == "10.0.1.21") is found
+
+
+def test_a_long_run_of_digits_and_dots_is_checked_at_once():
+    # 주소가 1,538번 든 20,000자의 점 숫자. 주소마다 앞에 "숫자."가 있어 앞의 점 숫자가 이름 조각인지 보아야 한다.
+    # 자리마다 그 점 숫자를 처음부터 다시 훑으면 길이의 제곱이 된다
+    script = "5." + "10.0.1.21..5." * 1538 + "5555"
+    assert len(script) == 20_000
+    start = time.perf_counter()
+    assert never_ip_in(script, ["10.0.1.21"]) is None
+    assert time.perf_counter() - start < 1
 
 
 def test_a_forbidden_ipv6_is_found_as_text_in_any_case():

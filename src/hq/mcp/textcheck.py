@@ -3,6 +3,7 @@
 글자만 본다. 스크립트를 실행하지도 파싱하지도 않는다. 둘 다 안전 장치이므로 애매하면 걸리는 쪽으로 만든다.
 """
 
+import bisect
 import re
 from collections.abc import Sequence
 
@@ -31,16 +32,48 @@ def never_ip_in(script: str, never: Sequence[str]) -> str | None:
     never는 canonical_ip로 고친 글자다. 앞에 0을 붙인 숫자, 이어 붙여 만든 글자, 이름으로 적은 주소는 찾지 못한다.
     """
     for ip in never:
-        if _pattern(ip).search(script):
+        if ":" in ip:  # IPv6
+            if re.search(re.escape(ip), script, re.IGNORECASE):
+                return ip
+        elif _ipv4_in(script, ip):
             return ip
     return None
 
 
-def _pattern(ip: str) -> re.Pattern[str]:
-    if ":" in ip:  # IPv6
-        return re.compile(re.escape(ip), re.IGNORECASE)
-    # 더 긴 점 숫자의 일부만 뺀다: 앞에 숫자나 "숫자."가 있거나(110.0.1.21, 5.10.0.1.21) 뒤에 숫자나 ".숫자"가
-    # 있으면(10.0.1.210, 10.0.1.21.5) 다른 주소의 일부다. 앞의 점 하나만으로는 빼지 않는다. app.10.0.1.21.nip.io
-    # 같은 이름은 그 주소로 풀리므로 이름 속의 주소도 찾는다. \\10.0.1.21\c$와 10.0.1.21:445도 맞는다.
-    # \d가 아니라 [0-9]로 쓴다. \d는 다른 문자의 숫자도 맞으므로 그런 글자가 붙은 주소를 놓친다
-    return re.compile(rf"(?<![0-9])(?<![0-9]\.){re.escape(ip)}(?![0-9]|\.[0-9])")
+# 숫자와 점은 ASCII만 본다. \d는 다른 문자의 숫자도 맞으므로 그런 글자가 붙은 주소를 놓친다
+_DIGITS = frozenset("0123456789")
+_NUMBER = _DIGITS | {"."}
+_LABEL = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-")  # 이름 조각에 드는 글자(숫자 말고)
+_NUMBER_RUN = re.compile(r"[0-9.]+")
+
+
+def _ipv4_in(script: str, ip: str) -> bool:
+    r"""ip가 더 긴 점 숫자의 일부가 아닌 자리에 글자로 있으면 참. 스크립트 길이에 비례하는 시간에 끝난다.
+
+    뒤에 숫자나 ".숫자"가 오면(10.0.1.210, 10.0.1.21.5) 다른 주소의 일부다. 앞은 주소 바로 앞의 점 숫자 줄 R로
+    판단한다. R이 없으면 찾았다(\\10.0.1.21\c$, 10.0.1.21:445). R이 숫자로 끝나면 더 긴 숫자의 꼬리다(110.0.1.21).
+    R이 점으로 끝나고 숫자가 없으면 찾았다(..10.0.1.21). R이 점으로 끝나고 숫자가 있으면 R 앞 글자로 가른다:
+    영문, _, -이면 R은 이름의 일부이고 이름은 그 주소로 풀리므로 찾았다(a1.10.0.1.21.nip.io, x.5.10.0.1.21).
+    그 밖(맨 앞, 공백, 따옴표 등)이면 더 긴 점 숫자의 꼬리다(5.10.0.1.21, 1.2.10.0.1.21).
+    """
+    run_starts: list[int] | None = None  # 점 숫자 줄의 시작 자리들. 처음 필요할 때 한 번만 만든다
+    # 겹치지 않게 찾아도 놓치지 않는다: 뒤 조건을 지난 자리 뒤에는 숫자도 ".숫자"도 없으므로, 그 자리와 겹치며
+    # 더 뒤까지 이어지는 다른 자리는 있을 수 없다
+    for match in re.finditer(rf"{re.escape(ip)}(?![0-9]|\.[0-9])", script):
+        at = match.start()
+        if at == 0 or script[at - 1] not in _NUMBER:
+            return True
+        if script[at - 1] != ".":
+            continue
+        # R 끝의 점들을 거슬러 간다. 앞에서 찾은 자리는 숫자로 끝나므로 거슬러 가는 길은 서로 겹치지 않는다
+        last = at - 1
+        while last >= 0 and script[last] == ".":
+            last -= 1
+        if last < 0 or script[last] not in _DIGITS:
+            return True
+        if run_starts is None:
+            run_starts = [run.start() for run in _NUMBER_RUN.finditer(script)]
+        start = run_starts[bisect.bisect_right(run_starts, last) - 1]
+        if start > 0 and script[start - 1] in _LABEL:
+            return True
+    return False
