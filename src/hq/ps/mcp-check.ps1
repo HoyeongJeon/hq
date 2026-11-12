@@ -247,8 +247,9 @@ function Test-HqPathString($string) {
     }
     $ascii = [string[]]@(foreach ($piece in $pieces) { Get-HqAsciiCopy $piece })
     if ((Test-HqBlockedPath $pieces) -or (Test-HqBlockedPath $ascii)) {
-        Add-HqReason 'PATH' ('UNC 경로(\\, //), 공급자 표기(::, Registry::만 받음), function:, alias:, variable: ' +
-            '경로는 명령 인자로 쓸 수 없습니다. 변수나 $( )가 맨 앞에 있으면 그 뒤의 글자로 판단합니다.') $string
+        Add-HqReason 'PATH' ('UNC 경로(\\, //)와 NT 이름 공간 경로(\??\), 공급자 표기(::, Registry::만 받음), ' +
+            'function:, alias:, variable: 경로는 명령 인자로 쓸 수 없습니다. 변수나 $( )가 맨 앞에 있으면 그 뒤의 ' +
+            '글자로 판단합니다.') $string
     }
 }
 

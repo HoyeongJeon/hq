@@ -599,6 +599,14 @@ def test_a_path_with_the_nt_namespace_prefix_is_refused(script):
     assert not ok and "PATH" in found
 
 
+def test_the_path_refusal_names_the_nt_namespace_prefix():
+    # 거절된 까닭을 Claude가 알 수 있게 \\, //와 함께 \??\도 적는다
+    verdict = check_query("Get-Content '\\??\\UNC\\z\\c$\\x'")
+    paths = [reason for reason in verdict.reasons if reason.startswith("PATH")]
+    assert not verdict.ok and len(paths) == 1
+    assert "\\\\, //" in paths[0] and "\\??\\" in paths[0]
+
+
 def test_question_marks_elsewhere_in_a_path_pass():
     # 물음표 둘 뒤에 구분자가 없거나(\??x는 -like의 패턴) 경로의 맨 앞이 아니면 그 표기가 아니다
     script = "\n".join(["Get-ChildItem 'C:\\x\\??'", "Write-Output '\\?'", "Where-Object Name -like '\\??x'"])
