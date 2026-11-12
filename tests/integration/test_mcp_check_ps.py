@@ -30,11 +30,11 @@ def codes_by_line(script):
     return verdict.ok, found
 
 
-# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 68줄을 차례로 검사하면 기본 한도 120초를 넘는다
+# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 69줄을 차례로 검사하면 기본 한도 120초를 넘는다
 @pytest.mark.timeout(600)
 def test_every_attack_in_the_spec_is_refused():
     attacks = spec_attacks()
-    assert len(attacks) >= 68 and "Get-Process | Stop-Process" in attacks
+    assert len(attacks) >= 69 and "Get-Process | Stop-Process" in attacks
     for script in attacks:
         verdict = check_query(script)
         assert verdict.ok is False, script
@@ -577,6 +577,31 @@ def test_strings_that_only_start_with_spaces_pass():
     script = "\n".join(
         ["Get-ChildItem ' C:\\x'", "Write-Output ' \\ x'", 'Get-ChildItem "$a \\$b"', 'Write-Output "  $x  "']
     )
+    verdict = check_query(script)
+    assert (verdict.ok, verdict.reasons) == (True, ())
+
+
+# NT 이름 공간 표기. .NET의 GetFullPath는 \??\UNC\z\c$\x를 고치지 않고 그대로 두고 Windows는 이것을 \\z\c$\x와 같은
+# 경로로 읽는다(2026-11-12 측정). 같은 앞부분의 로컬 경로(\??\C:\x)도 거절한다. 규칙을 단순하게 둔 값이다
+@pytest.mark.parametrize(
+    "script",
+    [
+        "Get-Content '\\??\\UNC\\z\\c$\\x'",
+        "Get-Content ' \\??\\UNC\\z\\c$\\x'",
+        "Get-Content -LiteralPath '\\??\\UNC\\z\\c$\\x'",
+        'Get-Content "$null\\??\\UNC\\z\\c$\\x"',
+        "Get-Content '\\??\\C:\\x'",
+        "Get-Content '/??/UNC/z/c$/x'",
+    ],
+)
+def test_a_path_with_the_nt_namespace_prefix_is_refused(script):
+    ok, found = codes(script)
+    assert not ok and "PATH" in found
+
+
+def test_question_marks_elsewhere_in_a_path_pass():
+    # 물음표 둘 뒤에 구분자가 없거나(\??x는 -like의 패턴) 경로의 맨 앞이 아니면 그 표기가 아니다
+    script = "\n".join(["Get-ChildItem 'C:\\x\\??'", "Write-Output '\\?'", "Where-Object Name -like '\\??x'"])
     verdict = check_query(script)
     assert (verdict.ok, verdict.reasons) == (True, ())
 

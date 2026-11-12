@@ -184,8 +184,10 @@ function Test-HqBlockedPath([string[]]$pieces) {
         }
     }
     if ($null -ne $first) {
-        # \\, //로 시작하는 UNC 경로. PowerShell은 /도 경로 구분자로 받으므로 섞어 쓴 \/, /\도 같다
-        if ([regex]::IsMatch($first, '\A[\\/]{2}')) { return $true }
+        # \\, //로 시작하는 UNC 경로. PowerShell은 /도 경로 구분자로 받으므로 섞어 쓴 \/, /\도 같다. NT 이름 공간
+        # 표기 \??\도 막는다: .NET은 \??\UNC\z\c$\x를 고치지 않고 Windows에 넘기고 Windows는 이것을 \\z\c$\x로 읽는다
+        # (2026-11-12 측정). 구분자는 어느 쪽이든 받고(/??/), 로컬 경로(\??\C:\x)도 함께 막힌다
+        if ([regex]::IsMatch($first, '\A(?:[\\/]{2}|[\\/]\?\?[\\/])')) { return $true }
         # 함수 본문을 스크립트 블록으로 꺼내는 드라이브(function:, alias:, variable:)
         foreach ($prefix in $hqPathPrefixes) {
             if ($first.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
