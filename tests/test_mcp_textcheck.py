@@ -59,6 +59,9 @@ def test_a_run_of_comments_after_using_is_checked_at_once():
         ("web01.10.0.1.21.sslip.io", True),
         ("x.5.10.0.1.21", True),
         ("srv-1.10.0.1.21", True),
+        # 빈 조각(..) 뒤의 주소. 그 뒤의 숫자 묶음은 앞의 점 숫자에 이어지지 않는다
+        ("5.10.0.1.21..10.0.1.21", True),
+        ("x..5.10.0.1.21", True),
         ("Get-Date # 10.0.1.210", False),
         ("110.0.1.21", False),
         ("10.0.1.21.5", False),
@@ -75,9 +78,9 @@ def test_a_forbidden_ip_is_found_only_as_a_whole_address(script, found):
 
 
 def test_a_long_run_of_digits_and_dots_is_checked_at_once():
-    # 주소가 1,538번 든 20,000자의 점 숫자. 주소마다 앞에 "숫자."가 있어 앞의 점 숫자가 이름 조각인지 보아야 한다.
-    # 자리마다 그 점 숫자를 처음부터 다시 훑으면 길이의 제곱이 된다
-    script = "5." + "10.0.1.21..5." * 1538 + "5555"
+    # 주소가 1,000번 든 20,000자의 점 숫자(공백으로 나눔). 주소마다 앞에 "1.1.1.1.1."이 있어 그 묶음의 앞 글자를
+    # 보아야 하고, 모두 더 긴 점 숫자의 꼬리라 끝까지 본다. 자리마다 앞을 처음부터 다시 훑으면 길이의 제곱이 된다
+    script = (" " + "1." * 5 + "10.0.1.21") * 1000
     assert len(script) == 20_000
     start = time.perf_counter()
     assert never_ip_in(script, ["10.0.1.21"]) is None
