@@ -47,10 +47,20 @@ def test_a_run_of_comments_after_using_is_checked_at_once():
         ("Test-NetConnection 10.0.1.21 -Port 445", True),
         ("gci '\\\\10.0.1.21\\c$'", True),
         ("x 10.0.1.21:445", True),
+        # 이름 속의 주소(nip.io, sslip.io 같은 이름은 그 주소로 풀린다)와 앞에 점이 겹친 주소
+        ("app.10.0.1.21.nip.io", True),
+        ("..10.0.1.21", True),
+        ("x.10.0.1.21", True),
+        ("\\\\10.0.1.21\\c$", True),
+        ("10.0.1.21:445", True),
+        ("http://a.10.0.1.21.sslip.io/x", True),
         ("Get-Date # 10.0.1.210", False),
         ("110.0.1.21", False),
         ("10.0.1.21.5", False),
         ("1.10.0.1.21", False),
+        ("10.0.1.210", False),
+        ("5.10.0.1.21", False),
+        ("1.2.10.0.1.21", False),
     ],
 )
 def test_a_forbidden_ip_is_found_only_as_a_whole_address(script, found):
