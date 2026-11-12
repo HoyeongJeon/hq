@@ -35,7 +35,15 @@ def profile_from_registry() -> str:
     return winreg.ExpandEnvironmentStrings(value) if kind == winreg.REG_EXPAND_SZ else value
 
 
-@pytest.mark.parametrize("spell", [str, lambda path: path.upper() + "\\", lambda path: path.replace("\\", "/")])
+@pytest.mark.parametrize(
+    "spell",
+    [
+        str,
+        lambda path: path.upper() + "\\",
+        lambda path: path.replace("\\", "/"),
+        lambda path: "\\\\?\\" + path,  # 확장 경로 표기
+    ],
+)
 def test_the_real_profile_is_refused_however_it_is_written(monkeypatch, spell):
     monkeypatch.setenv("USERPROFILE", spell(profile_from_registry()))
     with pytest.raises(RuntimeError, match="임시 프로필"):

@@ -53,5 +53,13 @@ def _real_profile() -> str:
 
 
 def _same_path(a: str, b: str) -> bool:
-    """대소문자, 구분자(/, \\), 끝의 구분자, 짧은 이름과 연결을 풀어 같은 폴더인지 본다."""
-    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    r"""같은 폴더인지. 둘 다 있으면 파일 시스템에 묻는다(os.path.samefile: 대소문자, 구분자, \\?\ 같은 표기와 상관없다).
+    하나라도 없으면 앞의 \\?\를 떼고 대소문자, 구분자(/, \), 끝의 구분자, 짧은 이름과 연결을 풀어 견준다."""
+    if os.path.exists(a) and os.path.exists(b):
+        return os.path.samefile(a, b)
+    return _normalised(a) == _normalised(b)
+
+
+def _normalised(path: str) -> str:
+    path = path.removeprefix("\\\\?\\")
+    return os.path.normcase(os.path.realpath(path))

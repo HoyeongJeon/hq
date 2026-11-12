@@ -99,7 +99,11 @@ def use(monkeypatch, proc: FakeProc) -> FakeProc:
 
 
 def unreadable(monkeypatch, path: Path) -> None:
-    """Windows가 path의 속성 읽기를 거부하듯 os.stat이 PermissionError를 던지게 한다. Path.exists는 다시 던진다."""
+    """Windows가 path의 속성 읽기를 거부하듯 os.stat이 PermissionError를 던지게 한다. Path.exists는 다시 던진다.
+
+    Python 3.12의 os.path.exists(nt._path_exists)는 바꾼 os.stat을 부르지 않는다. 그래서 이 도우미를 쓰는 시험은
+    확인이 더는 os.stat을 거치지 않음을 보일 뿐, 확인 안에서 난 오류를 삼키는 것까지 보이지는 않는다.
+    """
     real_stat = os.stat
 
     def stat(target, *args, **kwargs):
