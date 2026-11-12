@@ -3,6 +3,8 @@
 import threading
 import time
 
+from profileguard import require_temp_profile
+
 from hq.sessions import spawn_conpty
 
 # ConPTY는 시작할 때 터미널 종류를 묻는다(DA1). 답이 없으면 약 3초 기다린 뒤에야 셸을 띄운다.
@@ -13,6 +15,7 @@ DA1_ANSWER = "\x1b[?1;0c"
 
 def run_pty(argv: list[str], *, writes=(), timeout: float = 30.0) -> tuple[str, int | None]:
     """writes는 (시작 후 몇 초 뒤, 보낼 글자) 목록. 프로세스가 끝날 때까지 기다린다."""
+    require_temp_profile()  # 실제 프로필이면 띄우지 않는다. 친 줄이 사용자의 입력 기록에 남는다
     proc = spawn_conpty(argv, 24, 80)  # 앱과 같은 어댑터. 소켓을 열지 않는다
     try:
         chunks: list[str] = []

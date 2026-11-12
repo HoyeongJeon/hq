@@ -7,6 +7,7 @@ import threading
 import time
 from ctypes import wintypes
 
+import profileguard
 import pytest
 from fakes import wait_for
 from procs import pid_alive
@@ -42,6 +43,7 @@ class Traced:
 
 def make(**options):
     """실제 ConPTY로 세션 관리자를 만든다. 띄운 PTY도 돌려줘 pid와 trace를 볼 수 있게 한다."""
+    profileguard.require_temp_profile()  # 실제 프로필이면 대화형 셸을 띄울 관리자를 만들지 않는다
     out, exits, ptys = [], [], []
 
     def spawn(argv, rows, cols):
@@ -63,6 +65,13 @@ def cleanup():
     yield managers.append
     for manager in managers:
         manager.close_all()
+
+
+def test_make_refuses_the_real_profile_before_anything_starts(monkeypatch):
+    # make는 셸을 띄우지 않고 세션 관리자만 만든다. 그 전에 임시 프로필인지 본다(profileguard)
+    monkeypatch.setenv("USERPROFILE", profileguard._real_profile())
+    with pytest.raises(RuntimeError, match="임시 프로필"):
+        make()
 
 
 def session_warnings(caplog) -> list[str]:
@@ -177,6 +186,7 @@ def test_a_program_that_cannot_start_raises_oserror(tmp_path):
 
 def test_a_session_leaves_hq_without_a_listening_port():
     # 다른 테스트가 남긴 소켓이 섞이지 않게 새 프로세스에서 띄우고, 그 프로세스의 LISTEN 포트만 본다.
+    profileguard.require_temp_profile()  # 그 프로세스가 이 환경으로 대화형 셸을 띄운다
     result = subprocess.run(
         [sys.executable, "-c", NO_LISTEN_HELPER], capture_output=True, text=True, timeout=60, check=False
     )
@@ -272,6 +282,7 @@ time.sleep(60)
 
 
 def test_children_end_when_hq_is_killed():
+    profileguard.require_temp_profile()  # 도우미 프로세스가 이 환경으로 대화형 셸을 띄운다
     helper = subprocess.Popen([sys.executable, "-c", HELPER], stdout=subprocess.PIPE, text=True)
     child = int(helper.stdout.readline())
     assert pid_alive(child)
