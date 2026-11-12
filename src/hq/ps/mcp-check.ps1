@@ -171,11 +171,15 @@ function Test-HqVariableValue($value) {
 function Test-HqBlockedPath([string[]]$pieces) {
     # 문자열의 글자 부분(상수는 값 하나, 변수가 섞인 문자열은 Get-HqLiteralPieces의 조각들)으로 판단한다.
     # UNC와 막힌 앞부분은 앞에 펼침만 있는 첫 조각(비지 않은 첫 조각)에서 본다. 빈 펼침($null, $())은 아무것도 내지
-    # 않으므로 그 뒤의 글자가 경로의 시작이다
+    # 않으므로 그 뒤의 글자가 경로의 시작이다. 조각 앞의 공백(U+0020)은 지우고 보고, 공백뿐인 조각은 빈 조각으로 본다.
+    # PowerShell의 경로 해석은 ' \\z\x'를 현재 위치 기준 경로로 보지만 .NET은 UNC 경로로 본다(2026-11-11 이 PC에서
+    # 글자 처리만으로 측정). UNC와 막힌 앞부분은 공백으로 시작하지 않으므로 공백을 지운 글자를 보면 원래 글자도 본
+    # 셈이다. 탭 같은 다른 공백은 보이지 않는 글자를 지운 사본(Test-HqPathString)에서 사라진다
     $first = $null
     foreach ($piece in $pieces) {
-        if ($piece.Length -gt 0) {
-            $first = $piece
+        $trimmed = $piece.TrimStart([char]0x20)  # U+0020만 서수로 지운다
+        if ($trimmed.Length -gt 0) {
+            $first = $trimmed
             break
         }
     }

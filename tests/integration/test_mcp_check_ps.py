@@ -30,11 +30,11 @@ def codes_by_line(script):
     return verdict.ok, found
 
 
-# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 67줄을 차례로 검사하면 기본 한도 120초를 넘는다
+# 검사 하나가 powershell.exe를 하나 띄운다(이 PC에서 약 2.7초). 68줄을 차례로 검사하면 기본 한도 120초를 넘는다
 @pytest.mark.timeout(600)
 def test_every_attack_in_the_spec_is_refused():
     attacks = spec_attacks()
-    assert len(attacks) >= 67 and "Get-Process | Stop-Process" in attacks
+    assert len(attacks) >= 68 and "Get-Process | Stop-Process" in attacks
     for script in attacks:
         verdict = check_query(script)
         assert verdict.ok is False, script
@@ -548,6 +548,35 @@ def test_a_path_is_judged_by_the_format_string_the_engine_uses(script):
 def test_literal_braces_and_an_escaped_dollar_in_a_mixed_string_pass():
     # 틀 문자열에서 글자 중괄호는 겹쳐 있다({{0}}). `$는 글자 $라 값이 $로 시작한다
     script = "\n".join(['Write-Output "{0} $x {1}"', 'Write-Output "`$null\\\\z$null"'])
+    verdict = check_query(script)
+    assert (verdict.ok, verdict.reasons) == (True, ())
+
+
+# 앞의 공백(U+0020)은 지우고 본다. PowerShell의 경로 해석은 ' \\z\c$\x'를 현재 위치 기준 경로로 보지만 .NET은 UNC
+# 경로로 보므로 글자를 .NET에 그대로 넘기는 명령은 그 컴퓨터에 닿는다(2026-11-11 이 PC에서 글자 처리만으로 측정).
+# 공백뿐인 글자 부분은 빈 것으로 본다. 탭은 보이지 않는 글자를 지운 사본에서 사라진다
+@pytest.mark.parametrize(
+    "script",
+    [
+        "Get-Content ' \\\\z\\c$\\x'",
+        "Get-Content '   //z/c$/x'",
+        'Get-Content " \\\\$h\\c$"',
+        'Get-Content "$null \\\\z\\c$\\x"',
+        'Get-Content " $null\\\\z\\c$\\x"',
+        "Get-Content ' function:\\x'",
+        "Get-Content $null' '\\\\z\\c$\\x",
+        "Get-Content '\t \\\\z\\c$\\x'",
+    ],
+)
+def test_a_path_after_leading_spaces_is_refused(script):
+    ok, found = codes(script)
+    assert not ok and "PATH" in found
+
+
+def test_strings_that_only_start_with_spaces_pass():
+    script = "\n".join(
+        ["Get-ChildItem ' C:\\x'", "Write-Output ' \\ x'", 'Get-ChildItem "$a \\$b"', 'Write-Output "  $x  "']
+    )
     verdict = check_query(script)
     assert (verdict.ok, verdict.reasons) == (True, ())
 
