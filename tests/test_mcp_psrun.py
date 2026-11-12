@@ -5,6 +5,7 @@
 
 import io
 import itertools
+import os
 import subprocess
 import threading
 import time
@@ -97,6 +98,18 @@ def use(monkeypatch, proc: FakeProc) -> FakeProc:
     return proc
 
 
+def unreadable(monkeypatch, path: Path) -> None:
+    """Windows가 path의 속성 읽기를 거부하듯 os.stat이 PermissionError를 던지게 한다. Path.exists는 다시 던진다."""
+    real_stat = os.stat
+
+    def stat(target, *args, **kwargs):
+        if isinstance(target, (str, os.PathLike)) and os.fspath(target) == os.fspath(path):
+            raise PermissionError(13, "액세스가 거부되었습니다", os.fspath(path))
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+
+
 @pytest.mark.usefixtures("runs")
 def test_clixml_is_removed_and_plain_lines_around_it_are_kept_wherever_the_chunks_split(monkeypatch):
     # 표시 줄, <Objs, </Objs>, 한글, \r\n의 안쪽을 포함해 모든 자리에서 갈라 본다
@@ -172,6 +185,17 @@ def test_the_stop_grace_never_extends_the_timeout(monkeypatch, tmp_path):
     finally:
         timer.cancel()
     assert result.killed and proc.killed and 1.4 < time.monotonic() - began < 3
+
+
+@pytest.mark.usefixtures("runs")
+def test_a_stop_path_that_cannot_be_checked_is_treated_as_absent(monkeypatch, tmp_path):
+    # 멈춤 파일을 보다 난 오류는 "파일 없음"이다. 프로세스는 평소처럼 기다리고, 끝나면 그 코드와 출력을 돌려준다
+    stop = tmp_path / "stop"
+    unreadable(monkeypatch, stop)
+    proc = use(monkeypatch, FakeProc(out=["끝\n".encode()]))
+    result = run_ps_template(TEMPLATE, {}, timeout=5, stop_path=stop, stop_grace=10)
+    assert (result.code, result.stdout, result.killed) == (0, "끝\n", False)
+    assert proc.waits == [psrun._STOP_POLL_SECONDS] and not proc.killed
 
 
 @pytest.mark.usefixtures("runs")

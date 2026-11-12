@@ -6,6 +6,7 @@
 결과의 글(note)에는 비밀번호 파일 경로와 사용자 이름을 넣지 않는다.
 """
 
+import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -85,8 +86,8 @@ def run_on_server(
         return RunOutcome(job.target, "SPAWN_FAILED", seconds=time.monotonic() - started)
     seconds = time.monotonic() - started
     if result.killed:
-        # 취소 파일이 있으면 취소한 뒤 정리 시간 안에 끝나지 않아 끝낸 것이다
-        status = "CANCELLED" if job.cancel_path.exists() else "TIMEOUT"
+        # 취소 파일이 있으면 취소한 뒤 정리 시간 안에 끝나지 않아 끝낸 것이다. 보다 난 오류(권한 등)는 "없음"이다
+        status = "CANCELLED" if os.path.exists(job.cancel_path) else "TIMEOUT"
         note = _KILLED_NOTE
     else:
         status = STATUS_BY_CODE.get(result.code, "UNKNOWN")

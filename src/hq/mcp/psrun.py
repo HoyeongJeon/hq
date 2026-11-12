@@ -150,7 +150,7 @@ def _wait(proc: subprocess.Popen[bytes], timeout: float, stop_path: Path | None,
     seen = False
     while True:
         now = time.monotonic()
-        if not seen and stop_path.exists():
+        if not seen and os.path.exists(stop_path):  # 보다 난 오류(권한 등)는 "없음"이다. Path.exists는 다시 던진다
             seen = True
             deadline = min(deadline, now + stop_grace)
         if now >= deadline:
