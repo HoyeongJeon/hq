@@ -1,10 +1,13 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 from hq.mcp.schema import tool_shapes
 
@@ -120,3 +123,36 @@ def test_the_remove_script_unregisters_the_probe_and_deletes_what_setup_made():
     text = (ROOT / "tools/mcp/remove-probe.ps1").read_text(encoding="utf-8-sig")
     assert "claude mcp remove hq --scope local" in text
     assert "C:\\dev\\hq-mcp-probe" in text and "hq-probe-outside.txt" in text
+
+
+@pytest.mark.parametrize("start", ["probe", "probe/.claude", "."])
+def test_the_remove_script_deletes_the_folder_even_when_started_inside_it(tmp_path, start):
+    # Windows는 어느 프로세스의 현재 폴더인 폴더를 지우지 못하게 한다. A-3에서 폴더 안에서 실행해 폴더가 남았다
+    # (2026-11-16). 스크립트의 폴더 경로를 tmp로 바꾼 사본을 돌린다. PATH를 좁혀 진짜 claude 대신 tmp의 claude.cmd가
+    # 불리게 하므로 Claude Code의 설정은 건드리지 않는다
+    probe_dir = tmp_path / "probe"
+    (probe_dir / ".claude").mkdir(parents=True)
+    (probe_dir / "probe-log.txt").write_text("x", encoding="utf-8")
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    (temp / "hq-probe-outside.txt").write_text("outside", encoding="ascii")
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "claude.cmd").write_text('@echo %*> "%~dp0args.txt"\r\n@cd>> "%~dp0args.txt"\r\n@exit /b 0\r\n', "ascii")
+    text = (ROOT / "tools/mcp/remove-probe.ps1").read_text(encoding="utf-8-sig")
+    assert text.count("'C:\\dev\\hq-mcp-probe'") == 1
+    copy = tmp_path / "remove-probe.ps1"
+    copy.write_text(text.replace("'C:\\dev\\hq-mcp-probe'", f"'{probe_dir}'"), encoding="utf-8-sig")
+    system = Path(os.environ["SYSTEMROOT"]) / "System32"
+    env = {**os.environ, "TEMP": str(temp), "TMP": str(temp), "PATH": f"{stub};{system}"}
+    done = subprocess.run(
+        [str(system / "WindowsPowerShell/v1.0/powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-File", str(copy)],
+        cwd=tmp_path / start, env=env, capture_output=True, timeout=60,
+    )  # fmt: skip
+    called = (stub / "args.txt").read_text(encoding="ascii", errors="replace").splitlines()
+    assert called[0].strip() == "mcp remove hq --scope local"
+    assert called[1].lower().endswith("\\probe")  # local 범위 등록은 그 폴더에서 지운다
+    assert done.returncode == 0, done.stderr.decode("cp949", "replace")
+    assert not probe_dir.exists()
+    assert not (temp / "hq-probe-outside.txt").exists()
