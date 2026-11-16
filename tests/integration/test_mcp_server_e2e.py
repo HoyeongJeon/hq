@@ -143,11 +143,11 @@ def test_arguments_run_the_command_line_instead(tmp_path):
 
 
 def test_the_command_line_never_prints_an_escape_sequence_from_the_server_list(tmp_path):
-    # 손으로 고친 host가 목록을 읽지 못한 이유에 그대로 든다. 그 경고도 터미널에는 \x1b처럼 적어 보인다
+    # 손으로 고친 host가 목록을 읽지 못한 이유에 그대로 든다. 명령줄은 그 이유를 표준 출력에 \x1b처럼 적어 찍는다
     write_inventory(tmp_path, [{"id": "0" * 32, "name": "웹01", "host": "web\x1b[2J01", "username": "admin"}])
     result = command_line(tmp_path, "list")
     assert result.returncode == 2 and b"Traceback" not in result.stderr
-    assert b"\x1b" not in result.stdout + result.stderr and b"web\\x1b[2J01" in result.stderr
+    assert b"\x1b" not in result.stdout + result.stderr and b"web\\x1b[2J01" in result.stdout
 
 
 def test_the_command_line_prints_a_name_its_code_page_lacks(tmp_path):
