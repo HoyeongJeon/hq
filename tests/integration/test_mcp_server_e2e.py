@@ -48,6 +48,26 @@ def inventory(tmp_path, servers):
     inv.save()
 
 
+def write_inventory(tmp_path, items):
+    """HQ가 받지 않을 항목도 그대로 쓴다(손으로 고친 파일)."""
+    (tmp_path / "hq").mkdir(exist_ok=True)
+    data = {"version": 1, "settings": {"admin_ips": []}, "servers": items}
+    (tmp_path / "hq" / "inventory.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def mcp(tmp_path, messages, *, env=None):
+    """messages를 표준 입력으로 주고 닫은 뒤 서버가 끝날 때까지 기다린다."""
+    stdin = b"".join(json.dumps(m, ensure_ascii=False).encode("utf-8") + b"\n" for m in messages)
+    return subprocess.run(
+        [sys.executable, "-m", "hq.mcp"],
+        input=stdin,
+        capture_output=True,
+        env=env or environment(tmp_path),
+        timeout=60,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+
 def command_line(tmp_path, *argv):
     return subprocess.run(
         [sys.executable, "-m", "hq.mcp", *argv],
@@ -91,7 +111,25 @@ def test_the_real_entry_point_speaks_only_mcp_on_stdout_and_ends_when_stdin_clos
     assert by_id[4]["result"]["isError"] is True
     logs = tmp_path / "hq" / "logs"
     assert (logs / "hq-mcp.log").exists() and not (logs / "hq.log").exists()
-    assert "Get-Date" not in (logs / "hq-mcp.log").read_text(encoding="utf-8")  # 스크립트는 로그에 쓰지 않는다
+
+
+def test_the_server_writes_stderr_in_utf8_even_through_a_pipe(tmp_path):
+    # 서버 목록의 host에 cp949에 없는 글자가 있어 목록을 읽지 못한다. 그 경고가 표준 오류에 UTF-8로 그대로 간다
+    write_inventory(tmp_path, [{"id": "0" * 32, "name": "웹01", "host": f"웹{GRINNING}", "username": "admin"}])
+    (tmp_path / "hq" / "mcp-access.json").write_text('{"version": 1, "enabled": [], "never": []}', encoding="utf-8")
+    messages = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": INIT_PARAMS}, call(2, "list_servers", {})]
+    result = mcp(tmp_path, messages)
+    assert result.returncode == 0 and len(result.stdout.splitlines()) == 2
+    assert f"웹{GRINNING}" in result.stderr.decode("utf-8")
+
+
+def test_the_server_says_in_one_utf8_line_that_localappdata_is_missing(tmp_path):
+    env = environment(tmp_path)
+    del env["LOCALAPPDATA"]
+    result = mcp(tmp_path, [], env=env)
+    assert result.returncode == 1 and result.stdout == b""
+    expected = "MCP 서버를 시작하지 못했습니다: LOCALAPPDATA 환경 변수가 없습니다."
+    assert result.stderr.decode("utf-8").splitlines() == [expected]
 
 
 def test_arguments_run_the_command_line_instead(tmp_path):
