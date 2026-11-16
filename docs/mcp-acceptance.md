@@ -114,6 +114,8 @@
 
 ### 준비(스펙 13.4)
 
+**HQ 창은 금지 목록을 따르지 않는다.** HQ 창은 열 때, [상태 새로고침]을 누를 때, 서버를 추가하거나 고친 뒤에 목록의 모든 서버의 5985 포트를 확인한다. 금지 서버가 HQ 목록에 있으면 그 서버도 확인한다. 금지 목록(`never`)은 MCP 서버만 따른다.
+
 1. MCP 서버는 `C:\dev\hq`의 지금 파일로 돈다. `C:\dev\hq`가 MCP 코드가 든 가지를 담고 있는지 본다.
 2. 사용자 전역 설정 `~/.claude/settings.json`의 `permissions.allow`에 `Bash`, `PowerShell`, 웹, 커넥터 도구를 넓게 허용하는 규칙이 없는지 본다(스펙 13.3). 켤 서버의 메모에 비밀번호나 계정 정보가 없는지도 본다(메모는 Claude에게 간다, 스펙 11장).
 3. 켤 서버를 고른다. 3대 이상이고 2012 R2와 2019가 하나씩은 든다(MCP-2). 그중 운영 서버가 아니고 접속 계정 이름을 잠깐 바꿔도 되는 시험 서버 하나를 정해 둔다(MCP-7). 켜지 않은 서버를 하나 이상 남긴다(MCP-1).
@@ -136,10 +138,11 @@
 
    보여야 하는 것: `hq`가 연결되어 있다.
 
-아래에서 `<대상>`은 `list_servers`가 준 `target` 글자 하나다(예: `웹01 (10.0.1.21)`). Claude에게 할 말은 코드 블록의 글을 그대로 붙여 넣고 `<...>`만 바꾼다. 실행 기록은 `%LOCALAPPDATA%\hq\logs\mcp-audit-YYYY-MM.jsonl`이고, 이 PC의 PowerShell에서 마지막 줄을 이렇게 본다.
+아래에서 `<대상>`은 `list_servers`가 준 `target` 글자 하나다(예: `웹01 (10.0.1.21)`). Claude에게 할 말은 코드 블록의 글을 그대로 붙여 넣고 `<...>`만 바꾼다. 실행 기록은 달마다 `%LOCALAPPDATA%\hq\logs\mcp-audit-YYYY-MM.jsonl`이고, 이 PC의 PowerShell에서 모든 달 파일의 마지막 줄을 이렇게 본다.
 
 ```powershell
-Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jsonl" -Encoding UTF8 -Tail 1
+$last = Get-ChildItem "$env:LOCALAPPDATA\hq\logs" -Filter 'mcp-audit-*.jsonl' | Sort-Object Name | Get-Content -Encoding UTF8 | Select-Object -Last 1
+if ($last) { $last } else { '실행 기록이 아직 없다' }
 ```
 
 ### 확인 항목
@@ -168,7 +171,9 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
 
   3. 아무것도 하지 않고 1분 기다린 뒤 같은 창에서 `pktmon counters`로 기준을 본다.
 
-     보여야 하는 것: 숫자가 0이 아닌 줄이 없다. 있으면 이 PC의 다른 프로그램이 그 주소와 주고받는 것이므로 5번에서 그 숫자와 견준다.
+     보여야 하는 것: 아무 줄도 나오지 않는다(0인 카운터는 찍히지 않는다).
+
+     숫자가 0이 아닌 줄이 있으면 이 PC의 다른 프로그램이 그 주소와 주고받는 것이라 패킷 수로는 판단할 수 없다. `pktmon stop`과 `pktmon filter remove`로 끄고, 그 줄을 주소를 가려 적은 뒤 MCP-2로 넘어간다.
   4. Claude에게 말한다.
 
      ```text
@@ -184,11 +189,13 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
      pktmon filter remove
      ```
 
-     보여야 하는 것: 숫자가 0이 아닌 줄이 하나도 없으면 통과다(3번에 기준 숫자가 있었으면 그보다 늘지 않았으면 통과).
+     보여야 하는 것: 숫자가 0이 아닌 줄이 하나도 없으면 통과다. 0인 카운터는 찍히지 않으므로 아무 줄도 없는 것이 통과다.
 
-  아무것도 걸리지 않았을 때 `pktmon counters`가 무엇을 찍는지는 확인하지 못했다. 이 PC의 다른 프로그램이 그 주소와 주고받으면 MCP와 상관없이 실패처럼 보인다. 그때는 3번의 기준과 견준다.
+  0인 카운터는 기본으로 찍히지 않는다(`pktmon counters help`의 `--zero`). 실제로 아무것도 걸리지 않았을 때 무엇을 찍는지는 이 PC에서 확인하지 못했다.
 
 - [ ] MCP-2 켠 서버 3대의 메모리와 디스크 용량이 한 번에 나오고 한글이 깨지지 않는다(2012 R2, 2019). 2012 R2에서 `Write-Host` 출력이 `output`에 오는지도 본다.
+
+  `run_query`에는 확인 창이 뜨지 않아야 한다. 뜨면 거절하고 창에 보인 기능 이름(예: `run_script`)을 적는다.
 
   1. 준비 3번에서 고른, 2012 R2와 2019가 든 서버 3대로 Claude에게 말한다.
 
@@ -217,7 +224,7 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
   2. 같은 말을 한 번 더 하고, 이번에는 확인 창에서 거절(No)한다. 그다음 이 PC의 PowerShell에서 이 `reason`의 `start` 줄을 센다. 이 시험을 다시 할 때는 `reason`을 바꾼다.
 
      ```powershell
-     Get-ChildItem "$env:LOCALAPPDATA\hq\logs" -Filter 'mcp-audit-*.jsonl' | Get-Content -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event -eq 'start' -and $_.reason -eq '확인 창 시험' } | Measure-Object | Select-Object -ExpandProperty Count
+     Get-ChildItem "$env:LOCALAPPDATA\hq\logs" -Filter 'mcp-audit-*.jsonl' | Get-Content -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event -eq 'start' -and $_.reason -like '*확인 창 시험*' } | Measure-Object | Select-Object -ExpandProperty Count
      ```
 
      보여야 하는 것: 확인 창이 다시 뜨고, 센 수는 `1`이다(거절한 호출은 MCP 서버까지 오지 않는다).
@@ -231,8 +238,9 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
   4. 이 PC의 PowerShell에서 기록에 온 스크립트의 글자 수와 끝부분을 본다.
 
      ```powershell
-     $s = (Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jsonl" -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event -eq 'start' } | Select-Object -Last 1).script
-     $s.Length; $s.Substring($s.Length - 30)
+     $records = Get-ChildItem "$env:LOCALAPPDATA\hq\logs" -Filter 'mcp-audit-*.jsonl' | Sort-Object Name | Get-Content -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json }
+     $s = ($records | Where-Object { $_.event -eq 'start' -and $_.reason -like '*긴 스크립트 시험*' } | Select-Object -Last 1).script
+     if ($s) { $s.Length; $s.Substring([Math]::Max(0, $s.Length - 30)) } else { '긴 스크립트 시험의 start 줄이 없다' }
      ```
 
      보여야 하는 것: 글자 수가 20,000 이하의 19,000대이고, 끝이 그 번호의 줄과 `Get-Date`다.
@@ -254,6 +262,8 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
 
      보여야 하는 것: `"event": "rejected"`이고 `script`가 위의 한 줄이며, 이 호출의 `start` 줄은 없다(네트워크를 쓰기 전에 거절했다).
 
+     기록은 JSON이라 `script`의 `\`가 `\\`로 보인다(`C:\\hq-mcp-check-none.txt`). 한 글자 `\`로 읽는다.
+
 - [ ] MCP-5 실행 기록에 스크립트와 결과 상태가 남고 출력은 없다.
 
   시작 줄(`start`)과 끝 줄(`end`)은 같은 `call` 값으로 짝짓는다. 호출이 겹치면 다른 호출의 줄이 사이에 끼고, 달이 바뀔 때 걸친 호출은 시작 줄이 그달 파일에, 끝 줄이 다음 달 파일에 있다. 그래서 줄 순서나 파일 하나로 짝짓지 않는다.
@@ -268,12 +278,14 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
   2. 이 PC의 PowerShell에서 모든 달 파일을 읽어 마지막 `start` 줄과 같은 `call`의 줄을 찍는다.
 
      ```powershell
-     $records = Get-ChildItem "$env:LOCALAPPDATA\hq\logs" -Filter 'mcp-audit-*.jsonl' | Get-Content -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json }
+     $records = Get-ChildItem "$env:LOCALAPPDATA\hq\logs" -Filter 'mcp-audit-*.jsonl' | Sort-Object Name | Get-Content -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json }
      $call = ($records | Where-Object { $_.event -eq 'start' } | Select-Object -Last 1).call
      $records | Where-Object { $_.call -eq $call } | ConvertTo-Json -Depth 5
      ```
 
      보여야 하는 것: `start` 줄에 시각, `tool`, `targets`(target과 host), `script`(위의 한 줄 그대로), `sha256`이 있고, `end` 줄에 서버별 `status`, `exit_code`, `seconds`, `output_chars`가 있다.
+
+     PowerShell 5.1의 `ConvertTo-Json`은 `'`를 `'`로 찍는다. 같은 글자로 읽는다.
   3. 출력이 기록에 없는지 본다.
 
      ```powershell
@@ -284,10 +296,10 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
 
 - [ ] MCP-6 MCP 서버와 그 자식 프로세스가 수신 포트를 열지 않는다(AC-10 방식).
 
-  1. Claude에게 말한다. 확인 창의 스크립트가 부탁한 그대로인지 보고 허용한다. 60초 동안 도는 스크립트라 그동안 자식 PowerShell이 떠 있다.
+  1. 2번의 명령을 미리 복사해 둔다. Claude에게 말한다. 확인 창의 스크립트가 부탁한 그대로인지 보고 허용한다. 100초 동안 도는 스크립트라 그동안 자식 PowerShell이 떠 있다.
 
      ```text
-     hq의 run_script로 <대상>에서 Start-Sleep -Seconds 60; 'done' 을 실행해 줘. reason은 "포트 확인".
+     hq의 run_script로 <대상>에서 Start-Sleep -Seconds 100; 'done' 을 실행해 줘. reason은 "포트 확인".
      ```
 
   2. 도는 동안 이 PC의 PowerShell에서 실행한다.
@@ -314,9 +326,9 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
 
      V3가 막았으면 V3의 기록과 Claude가 받은 `status`, `errors`, `note`를 적는다. 적을 때 계정 이름, 서버 주소와 이름, 컴퓨터 이름, 사용자 폴더 경로는 가린다.
 
-  2~4번은 하지 않아도 된다. 로그인에 실패했을 때의 글에 계정 이름이 드는지 본다(개발 중에는 이 PC의 메시지 자료로만 확인했다). **비밀번호는 바꾸지 않는다.** 없는 계정 이름으로 한 번만 접속한다.
+  2~4번은 하지 않아도 된다. 로그인에 실패했을 때의 글에 계정 이름이 드는지 본다(개발 중에는 이 PC의 메시지 자료로만 확인했다). **비밀번호는 바꾸지 않는다.** 없는 계정 이름으로 한 번만 접속한다. 2~4번 사이에 비밀번호 창이 뜨면 아무것도 치지 말고 취소한다. 치면 저장된 비밀번호를 덮어쓴다. 서버를 고치면 HQ 창이 목록의 모든 서버 포트를 확인한다(준비의 경고).
 
-  2. HQ 창에서 준비 3번의 시험 서버를 우클릭해 [정보 수정]으로 접속 계정 이름만 `hq-mcp-nouser`로 바꾼다.
+  2. HQ 창에서 준비 3번의 시험 서버를 눌러 정보 패널의 `계정` 값을 이 PC의 메모장에 적어 둔다(이 문서에는 적지 않는다). 그 서버를 우클릭해 [정보 수정]에서 `ID` 칸만 `hq-mcp-nouser`로 바꿔 저장한다.
   3. Claude에게 말한다.
 
      ```text
@@ -326,7 +338,7 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
      보여야 하는 것: `errors`와 `note`에 `hq-mcp-nouser`가 없다.
 
      `status`가 `AUTH_FAILED`가 아니면 그 상태를 적는다. `hq-mcp-nouser`가 있으면 그 글을 적되 계정 이름, 서버 주소와 이름, 컴퓨터 이름, 사용자 폴더 경로는 가린다.
-  4. HQ 창에서 계정 이름을 원래대로 되돌리고 그 서버의 탭을 연다.
+  4. [정보 수정]에서 `ID`를 메모장에 적어 둔 값으로 되돌려 저장한 뒤 그 서버의 탭을 연다. 비밀번호 창이 뜨면 아무것도 치지 말고 취소한다.
 
      보여야 하는 것: 탭이 접속된다.
 
@@ -334,7 +346,9 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
 
   120초를 넘기는 호출은 Claude Code가 백그라운드 작업으로 옮기고 Claude는 다음 일을 한다. 결과는 끝난 뒤 완료 알림으로 온다(A-5). 백그라운드 작업은 `/tasks`에서 보고 멈출 수 있다. 1번은 120초 안에 끝나도록 시간 한도를 30초로 준다.
 
-  1. 이 서버로 연 HQ 탭을 모두 닫는다. Claude에게 말한다. 확인 창의 스크립트가 부탁한 그대로인지 보고 허용한다.
+  `<대상>`은 켠 서버 하나이고(금지 서버가 아니다) 1~4번 모두 같은 서버를 쓴다. 시작 전에 그 서버로 연 HQ 탭을 모두 닫는다(MCP-7의 4번에서 연 탭 포함).
+
+  1. Claude에게 말한다. 확인 창의 스크립트가 부탁한 그대로인지 보고 허용한다.
 
      ```text
      hq의 run_script로 <대상>에서 Start-Sleep -Seconds 600 을 timeout_seconds 30으로 실행해 줘. reason은 "시간 초과 시험".
@@ -355,26 +369,31 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
      ```
 
      보여야 하는 것: 120초가 지나면 호출이 백그라운드 작업으로 옮겨진다.
-  4. 3번에서 부른 때부터 약 6분 기다린 뒤, 이 PC의 PowerShell에서 스크립트가 `Start-Sleep -Seconds 300`으로 시작하는 `start` 줄의 `call`을 찾아 그 `call`의 `end` 줄을 본다. 그다음 2번을 다시 해 세션이 남았는지 본다.
+  4. 3번에서 부른 때부터 약 6분 기다린 뒤, 이 PC의 PowerShell에서 `reason`이 "취소 시험"인 `start` 줄의 `call`을 찾아 그 `call`의 `end` 줄을 본다. 그다음 2번을 다시 해 세션이 남았는지 본다.
 
      ```powershell
-     $records = Get-ChildItem "$env:LOCALAPPDATA\hq\logs" -Filter 'mcp-audit-*.jsonl' | Get-Content -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json }
-     $call = ($records | Where-Object { $_.event -eq 'start' -and $_.script -like 'Start-Sleep -Seconds 300*' } | Select-Object -Last 1).call
-     $records | Where-Object { $_.event -eq 'end' -and $_.call -eq $call } | ConvertTo-Json -Depth 5
+     $records = Get-ChildItem "$env:LOCALAPPDATA\hq\logs" -Filter 'mcp-audit-*.jsonl' | Sort-Object Name | Get-Content -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json }
+     $start = $records | Where-Object { $_.event -eq 'start' -and $_.reason -like '*취소 시험*' } | Select-Object -Last 1
+     $end = @($records | Where-Object { $_.event -eq 'end' -and $start -and $_.call -eq $start.call })
+     if (-not $start) { '취소 시험의 start 줄이 없다' } elseif ($end.Count -eq 0) { 'end 줄이 아직 없다(아직 도는 중)' } else { $end | ConvertTo-Json -Depth 5 }
      ```
 
-     보여야 하는 것: `end` 줄 하나. `status`가 `CANCELLED`면 취소가 MCP 서버에 와서 스크립트가 멈췄고, `OK`면 취소가 오지 않아 끝까지 돌았다(스펙 4.5). 어느 쪽인지 적는다. 아무것도 나오지 않으면 아직 도는 중이니 조금 뒤 다시 본다.
+     보여야 하는 것: `end` 줄 하나. `status`가 `CANCELLED`면 취소가 MCP 서버에 와서 스크립트가 멈췄고, `OK`면 취소가 오지 않아 끝까지 돌았다(스펙 4.5). 어느 쪽인지 적는다.
+
+     "아직 도는 중"이면 조금 뒤 다시 본다. 10분이 지나도 `end` 줄이 없으면 그렇게 적는다.
 
 - [ ] MCP-9 HQ 창이 떠 있는 동안에도 동작하고, AC-1, AC-3, AC-10이 그대로다.
 
-  1. HQ 창을 띄우고 서버 하나의 탭을 연다. Claude에게 말한다.
+  HQ 창은 열 때 목록의 모든 서버 포트를 확인한다(준비의 경고). `run_query`에는 확인 창이 뜨지 않아야 한다. 뜨면 거절하고 창에 보인 기능 이름을 적는다.
+
+  1. HQ 창을 띄우고 `<대상>`(켠 서버)의 탭을 연다. 금지 서버는 열지 않는다. Claude에게 말한다.
 
      ```text
      hq의 run_query로 <대상>에서 Get-Date를 실행해 줘.
      ```
 
      보여야 하는 것: 결과가 `OK`다.
-  2. HQ 창을 띄운 채로 `docs/acceptance.md`의 AC-1(바로가기를 다시 눌러도 창이 하나), AC-3(서버를 더블클릭하면 5초 안에 프롬프트), AC-10(그 문서의 명령으로 수신 포트 없음)을 다시 한다.
+  2. HQ 창을 띄운 채로 `docs/acceptance.md`의 AC-1(바로가기를 다시 눌러도 창이 하나), AC-3(서버를 더블클릭하면 5초 안에 프롬프트), AC-10(그 문서의 명령으로 수신 포트 없음)을 다시 한다. AC-3은 `<대상>`을 더블클릭한다.
 
      보여야 하는 것: 세 항목이 그 문서대로 통과한다.
 
@@ -404,24 +423,35 @@ Get-Content "$env:LOCALAPPDATA\hq\logs\mcp-audit-$(Get-Date -Format yyyy-MM).jso
      PowerShell 도구로 New-Item -ItemType File C:\dev\hq-ops\check.txt 를 실행해 줘.
      ```
 
+     보여야 하는 것: 확인 창이 뜬다.
+
      ```text
      Bash 도구로 touch check.txt 를 실행해 줘.
      ```
+
+     보여야 하는 것: 확인 창이 뜬다.
 
      ```text
      Read 도구로 <경로>를 읽어 줘.
      ```
 
+     보여야 하는 것: 거부된다.
+
      ```text
      Bash 도구에서 cat으로 <경로>를 읽어 줘. 그다음 PowerShell 도구에서 Get-Content로 같은 파일을 읽어 줘.
      ```
+
+     보여야 하는 것: 두 번 모두 확인 창이 뜬다.
 
      ```text
      Edit 도구로 <경로>의 outside를 changed로 고쳐 줘.
      ```
 
-     보여야 하는 것: `New-Item`, `touch`, `cat`, `Get-Content`는 확인 창이 뜨고, Read와 Edit는 거부되며, 이 PC에서 `Get-Content "$env:TEMP\hq-ops-outside.txt"`가 여전히 `outside`다.
-  4. 남은 파일을 지운다.
+     보여야 하는 것: 거부된다.
+  4. 이 PC의 PowerShell에서 파일이 그대로인지 본다: `Get-Content "$env:TEMP\hq-ops-outside.txt"`.
+
+     보여야 하는 것: `outside`.
+  5. 남은 파일을 지운다.
 
      ```powershell
      Remove-Item "$env:TEMP\hq-ops-outside.txt"

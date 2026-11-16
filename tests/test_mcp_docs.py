@@ -175,7 +175,7 @@ def test_every_script_is_read_in_the_window_before_it_is_allowed():
 
 def test_mcp3_counts_start_lines_by_reason():
     item = _manual_item("MCP-3")
-    assert "Measure-Object" in item and "$_.reason -eq" in item
+    assert "Measure-Object" in item and "$_.reason -like" in item
 
 
 def test_mcp7_never_changes_the_stored_password():
@@ -186,7 +186,32 @@ def test_mcp7_never_changes_the_stored_password():
 
 def test_mcp8_reads_the_end_line_of_the_stopped_call():
     item = _manual_item("MCP-8")
-    assert "$_.script -like 'Start-Sleep -Seconds 300*'" in item and "아직 도는 중" in item
+    assert "$_.reason -like '*취소 시험*'" in item and "아직 도는 중" in item
+    assert "취소 시험의 start 줄이 없다" in item and "10분이 지나도" in item
+
+
+def test_checkpoint_b_keeps_away_from_the_forbidden_server_and_the_stored_password():
+    text = _checkpoint_b()
+    # HQ 창은 금지 목록을 따르지 않고 목록의 모든 서버 포트를 확인한다
+    assert "HQ 창은 금지 목록을 따르지 않는다" in text.split("\n### 준비", 1)[1].split("\n### ", 1)[0]
+    for item_id in ("MCP-7", "MCP-9"):
+        assert "준비의 경고" in _manual_item(item_id), item_id
+    mcp9 = _manual_item("MCP-9")
+    assert "금지 서버는 열지 않는다" in mcp9 and "AC-3은 `<대상>`을 더블클릭한다" in mcp9
+    # 비밀번호 창에 치면 저장된 비밀번호를 덮어쓴다. ID는 메모장에 적어 두고 되돌린다
+    mcp7 = _manual_item("MCP-7")
+    assert "`ID`" in mcp7 and "메모장" in mcp7 and "아무것도 치지 말고 취소한다" in mcp7
+    # 실행 기록은 모든 달 파일에서 이유(reason)로 찾고, 찾지 못하면 그렇게 말한다
+    assert "Get-Date -Format yyyy-MM" not in text
+    assert "실행 기록이 아직 없다" in text
+    mcp3 = _manual_item("MCP-3")
+    assert "-like '*확인 창 시험*'" in mcp3 and "-like '*긴 스크립트 시험*'" in mcp3 and "[Math]::Max(0" in mcp3
+    # 기준에 0이 아닌 줄이 있으면 패킷 수로는 판단할 수 없다
+    mcp1 = _manual_item("MCP-1")
+    assert "0인 카운터는 찍히지 않" in mcp1 and "MCP-2로 넘어간다" in mcp1
+    assert "Start-Sleep -Seconds 100" in _manual_item("MCP-6")
+    assert "한 글자 `\\`로 읽는다" in _manual_item("MCP-4")
+    assert _manual_item("MCP-11").count("보여야 하는 것:") >= 7  # 1번, 3번의 블록 다섯, 4번
 
 
 def test_mcp11_exits_at_once_if_bypass_turns_on_and_removes_its_files():
