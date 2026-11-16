@@ -158,11 +158,15 @@ def test_the_spec_says_names_with_hidden_characters_cannot_be_used():
 def test_the_spec_says_hosts_are_resolved_together_and_a_cancel_before_start_is_rejected():
     text = _spec_section("### 8.1 ")
     assert "함께 풀" in text and "rejected" in text
+    assert "스레드를 띄우지 못하면" in text  # 그때도 거절로 남기고 아무것도 실행하지 않는다
+    assert "NOT_STARTED" in text  # 사전 확인 중의 취소
 
 
 def test_the_spec_bounds_the_server_list_and_query_refusals():
     text = _spec_section("## 9. ")
     assert "메모만" in text and "10개" in text and "예외" in text
+    assert "비운다" in text and "200자" in text
+    assert "200개까지" in _spec_section("### 4.5 ")
 
 
 def test_the_spec_says_how_two_processes_share_the_logs():
