@@ -61,6 +61,8 @@ REASON_MAX = 200
 # 남은 시간이 이 초 이하면 서버를 시작하지 않는다. 그보다 길면 정리 시간(GRACE_SECONDS)을 빼고도 5초 넘게 남는다
 _START_MARGIN = 15
 _POLL_SECONDS = 0.2  # 자리를 기다리거나 서버 스레드를 기다리는 동안 취소 신호와 호출 한도를 보는 간격
+# 이름 풀이를 모두 기다리는 한도. resolve_host는 이름마다 2초에서 끊으므로 보통은 그 전에 끝난다(스펙 6장)
+_RESOLVE_WAIT_SECONDS = 5.0
 _ARGUMENTS = {
     RUN_QUERY: {"targets", "script", "timeout_seconds"},
     RUN_SCRIPT: {"targets", "script", "timeout_seconds", "reason"},
@@ -73,6 +75,7 @@ _NO_ACCESS_FILE = (
     "사용자가 명령줄에서 python -m hq.mcp on <host>로 서버를 켜야 합니다."
 )
 _NOT_RECORDED = "실행 기록을 쓰지 못해 실행하지 않았습니다."
+_CANCELLED = "실행을 시작하기 전에 호출이 취소되어 어느 서버에도 접속하지 않았습니다."
 
 _LIST_SERVERS = (
     "HQ의 서버 목록입니다. 사용을 켠 서버만 보입니다. `targets`에는 여기서 받은 `target` 글자를 그대로 쓰세요."
@@ -225,7 +228,9 @@ def _run(deps: Deps, tool: str, arguments: dict, cancel: threading.Event) -> Too
     why = _screen(deps, tool, request.script, never)
     if why is not None:
         return _rejected(deps, tool, request.script, why)
-    addresses = [_addresses(deps, server.host) for server in chosen]  # IP host도 거친다. 그때는 풀지 않는다
+    addresses = _resolve_all(deps, [server.host for server in chosen], cancel)  # IP host도 거친다(풀지는 않는다)
+    if addresses is None:  # 시작 기록 전의 취소: 아무것도 하지 않고 거절로 남긴다
+        return _rejected(deps, tool, request.script, _CANCELLED)
     why = _forbidden(request.targets, addresses, never)
     if why is not None:
         return _rejected(deps, tool, request.script, why)
@@ -321,6 +326,41 @@ def _screen(deps: Deps, tool: str, script: str, never: Sequence[str]) -> str | N
     return "\n".join(lines)
 
 
+def _resolve_all(deps: Deps, hosts: Sequence[str], cancel: threading.Event) -> list[list[str] | None] | None:
+    """hosts를 함께 풀어 hosts 순서의 주소 목록을 돌려준다. 기다리는 사이에 취소되면 None.
+
+    host마다 데몬 스레드 하나로 푼다. _RESOLVE_WAIT_SECONDS 안에 끝나지 않았거나 예외로 끝난 풀이는 풀지 못한
+    것(None)이다. 결과는 기다림을 마친 순간의 사본이라, 늦게 끝난 풀이가 금지 주소 비교 뒤에 끼어들지 않는다.
+    """
+    lock = threading.Lock()
+    found: dict[str, list[str] | None] = {}
+
+    def lookup(host: str) -> None:
+        try:
+            addresses = _addresses(deps, host)
+        except Exception:
+            _log.exception("이름을 풀다 예외가 났습니다. 그 서버는 UNRESOLVED입니다.")
+            addresses = None
+        with lock:
+            found[host] = addresses
+
+    threads = [
+        threading.Thread(target=lookup, args=(host,), name="hq-mcp-resolve", daemon=True)
+        for host in dict.fromkeys(hosts)
+    ]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + _RESOLVE_WAIT_SECONDS
+    for thread in threads:
+        while thread.is_alive() and not cancel.is_set() and (left := deadline - time.monotonic()) > 0:
+            thread.join(min(_POLL_SECONDS, left))
+    if cancel.is_set():
+        return None
+    with lock:
+        settled = dict(found)
+    return [settled.get(host) for host in hosts]
+
+
 def _addresses(deps: Deps, host: str) -> list[str] | None:
     """host의 모든 주소(canonical_ip). 풀지 못했거나 비교할 수 없는 주소가 있으면 None이다."""
     found = deps.resolve(host)
@@ -388,16 +428,22 @@ class _Run:
         취소 신호가 켜지면 돌고 있는 서버의 취소 파일을 만든다. 템플릿은 그 파일을 보고 멈추고, psrun은 그 뒤
         GRACE_SECONDS 안에 끝나지 않은 프로세스 트리를 끝낸다. 그래서 이 함수는 언제나 돌아온다.
         """
-        threads = [
-            threading.Thread(target=self._one, args=(number, cancel), name=f"hq-mcp-run-{number}") for number in numbers
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            while thread.is_alive():
-                if cancel.is_set():
-                    self._write_cancel_files()
-                thread.join(_POLL_SECONDS)
+        started: list[threading.Thread] = []
+        try:
+            for number in numbers:
+                thread = threading.Thread(target=self._one, args=(number, cancel), name=f"hq-mcp-run-{number}")
+                thread.start()
+                started.append(thread)
+        except Exception:  # 스레드를 더 띄울 수 없다. 남은 서버는 시작하지 않는다
+            _log.exception("서버 실행 스레드를 띄우지 못했습니다.")
+            for number in numbers[len(started) :]:
+                self._outcomes[number] = _status(self._servers[number], "NOT_STARTED", INTERNAL_ERROR_TEXT)
+        finally:  # 띄운 스레드는 무슨 일이 있어도 끝까지 기다린다. 실행 기록의 끝 줄이 실제 결과를 담는다
+            for thread in started:
+                while thread.is_alive():
+                    if cancel.is_set():
+                        self._write_cancel_files()
+                    thread.join(_POLL_SECONDS)
 
     def results(self) -> list[RunOutcome]:
         return [

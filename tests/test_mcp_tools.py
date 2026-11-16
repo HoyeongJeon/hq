@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from hq.mcp import tools
 from hq.mcp.audit import AuditLog
 from hq.mcp.psrun import PsResult
 from hq.mcp.querycheck import Verdict, check_query, load_rules
@@ -349,7 +350,76 @@ def test_every_host_is_compared_with_never_through_resolve(tmp_path):
     )
     assert not call(handlers, "run_query", targets=[WEB], script="Get-Date").is_error
     assert call(handlers, "run_query", targets=[WEB, APP], script="Get-Date").is_error
-    assert fakes.resolve.calls == ["10.0.1.21", "10.0.1.21", "10.0.1.23"] and len(fakes.execute.jobs) == 1
+    first, *second = fakes.resolve.calls  # 한 호출의 이름들은 함께 풀므로 순서가 정해지지 않는다
+    assert (first, sorted(second)) == ("10.0.1.21", ["10.0.1.21", "10.0.1.23"]) and len(fakes.execute.jobs) == 1
+
+
+def test_names_are_resolved_together(tmp_path):
+    both = threading.Barrier(2, timeout=5)  # 두 풀이가 함께 돌아야만 지난다
+
+    def resolve(host):
+        both.wait()
+        return {"db01.example": ["192.0.2.31"], "app01.example": ["192.0.2.32"]}[host]
+
+    handlers, fakes = world(
+        tmp_path,
+        [("디비", "db01.example"), ("앱", "app01.example")],
+        on=["db01.example", "app01.example"],
+        resolve=resolve,
+    )
+    rows = rows_of(call(handlers, "run_query", targets=[DB, "앱 (app01.example)"], script="Get-Date"))
+    assert [(r["target"], r["status"]) for r in rows] == [(DB, "OK"), ("앱 (app01.example)", "OK")]
+    assert sorted(job.host for job in fakes.execute.jobs) == ["app01.example", "db01.example"]
+
+
+def test_a_lookup_that_fails_or_does_not_finish_in_time_is_unresolved(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(tools, "_RESOLVE_WAIT_SECONDS", 0.3)
+    stuck = threading.Event()
+
+    def resolve(host):
+        if host == "db01.example":
+            stuck.wait(5)  # 기다리는 한도보다 오래 걸린다
+            return ["192.0.2.31"]
+        if host == "app01.example":
+            raise OSError("이름 풀이 실패")
+        return [host]
+
+    servers = [("디비", "db01.example"), ("앱", "app01.example"), ("웹01", "10.0.1.21")]
+    handlers, fakes = world(tmp_path, servers, on=["db01.example", "app01.example", "10.0.1.21"], resolve=resolve)
+    try:
+        rows = rows_of(call(handlers, "run_query", targets=[DB, "앱 (app01.example)", WEB], script="Get-Date"))
+    finally:
+        stuck.set()
+    assert [r["status"] for r in rows] == ["UNRESOLVED", "UNRESOLVED", "OK"]
+    assert [job.host for job in fakes.execute.jobs] == ["10.0.1.21"] and "OSError" in caplog.text
+
+
+def test_a_call_cancelled_before_it_starts_runs_nothing_and_is_recorded(tmp_path):
+    cancel = threading.Event()
+    asked = threading.Event()
+    stuck = threading.Event()
+
+    def resolve(host):
+        asked.set()
+        stuck.wait(5)
+        return [host]
+
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"], resolve=resolve)
+    thread, results = in_thread(lambda: handlers["run_query"]({"targets": [WEB], "script": "Get-Date"}, cancel))
+    try:
+        assert asked.wait(5)
+        cancel.set()  # 이름을 푸는 중에 취소된다
+        thread.join(2)
+        assert not thread.is_alive()  # 풀이가 끝나기를 기다리지 않는다
+    finally:
+        stuck.set()
+    assert results[0].is_error and "취소" in results[0].text
+    assert fakes.execute.jobs == [] and fakes.probe.calls == [] and fakes.trusted_reads == []
+    assert [line["event"] for line in fakes.audit_lines()] == ["rejected"]
+    already = threading.Event()
+    already.set()
+    assert handlers["run_script"]({"targets": [WEB], "script": "x", "reason": "r"}, already).is_error
+    assert fakes.execute.jobs == [] and [line["event"] for line in fakes.audit_lines()] == ["rejected", "rejected"]
 
 
 def test_a_name_that_does_not_resolve_is_unresolved_and_the_rest_still_run(tmp_path):
@@ -469,6 +539,29 @@ def test_one_server_failing_inside_the_run_is_that_servers_unknown_only(tmp_path
     assert "RuntimeError" in caplog.text  # 예외는 로그에만 남는다
     end = fakes.audit_lines()[-1]
     assert [(r["status"], r["exit_code"]) for r in end["results"]] == [("UNKNOWN", None), ("UNKNOWN", 70), ("OK", 0)]
+
+
+def test_a_server_whose_thread_cannot_start_is_not_started_and_the_started_ones_are_awaited(tmp_path, monkeypatch):
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21"), ("앱", "10.0.1.23")], on=["10.0.1.21", "10.0.1.23"])
+    finished = []
+
+    def slow(job):
+        time.sleep(0.3)
+        finished.append(job.host)
+
+    fakes.execute.during = slow
+    real_start = threading.Thread.start
+
+    def start(thread):  # 둘째 서버의 스레드만 띄우지 못한다
+        if thread.name == "hq-mcp-run-1":
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    result = call(handlers, "run_query", targets=[WEB, APP], script="Get-Date")
+    assert finished == ["10.0.1.21"]  # 서버 0이 끝난 뒤에 돌아왔다
+    assert [r["status"] for r in rows_of(result)] == ["OK", "NOT_STARTED"]
+    assert [r["status"] for r in fakes.audit_lines()[-1]["results"]] == ["OK", "NOT_STARTED"]
 
 
 def test_at_most_eight_scripts_run_at_once_across_overlapping_calls(tmp_path):
@@ -623,9 +716,13 @@ def test_a_server_that_gets_a_slot_after_the_cancel_is_not_started(tmp_path):
 
 def test_a_cancelled_call_does_not_wait_for_a_slot_another_call_holds(tmp_path):
     slots = threading.BoundedSemaphore(1)
-    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"], slots=slots)
     cancel = threading.Event()
-    cancel.set()
+
+    def probe_then_cancel(hosts):  # 실행 기록에 시작을 쓴 뒤에 취소된다
+        cancel.set()
+        return dict.fromkeys(hosts, True)
+
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"], slots=slots, probe=probe_then_cancel)
     slots.acquire()  # 다른 호출이 자리를 모두 쥐고 있다
     try:
         thread, results = in_thread(lambda: handlers["run_query"]({"targets": [WEB], "script": "Get-Date"}, cancel))
