@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MCP_SPEC = ROOT / "docs/specs/2026-11-04-hq-mcp-design.md"
 ACCEPT = ROOT / "docs/mcp-acceptance.md"
+HIDE = "계정 이름, 서버 주소와 이름, 컴퓨터 이름, 사용자 폴더 경로는 가린다"
 
 
 def _checkpoint_b() -> str:
@@ -112,11 +113,89 @@ def test_the_probe_is_removed_from_outside_its_folder():
 # 체크포인트 B(MCP-1~MCP-11)
 
 
-def test_checkpoint_b_items_give_steps_and_the_words_to_say_to_claude():
+def test_checkpoint_b_items_give_steps_and_what_must_be_seen():
     for n in range(1, 12):
         item = _manual_item(f"MCP-{n}")
         assert re.search(r"^ {2}1\. ", item, flags=re.M), n  # 번호 붙은 단계
-        assert "본다" in item or "확인한다" in item, n
+        assert "보여야 하는 것:" in item, n
+        assert len(item.splitlines()) < 60, n  # 시간이 없는 사람이 한 번에 읽는다
+
+
+def test_the_document_says_to_hide_private_details_in_what_is_written_down():
+    # 공개 저장소다. 결과를 적을 때 계정, 서버, 컴퓨터, 사용자 폴더가 드러나지 않게 한다
+    intro = ACCEPT.read_text(encoding="utf-8").split("\n## ", 1)[0]
+    assert HIDE in intro
+    assert _manual_item("MCP-7").count(HIDE) >= 2
+
+
+def test_the_preparation_turns_on_enough_servers_and_says_how_a_forbidden_name_shows():
+    prep = _checkpoint_b().split("\n### 준비", 1)[1].split("\n### ", 1)[0]
+    for word in ("2012 R2", "2019", "MCP-7", "MCP-1", "이름으로 등록한", "켜지 않는다"):
+        assert word in prep, word
+
+
+def test_mcp1_counts_a_baseline_and_states_the_pass_rule():
+    item = _manual_item("MCP-1")
+    for word in ("1분", "숫자가 0이 아닌 줄이 하나도 없으면 통과", "pktmon filter list", "확인하지 못했다"):
+        assert word in item, word
+
+
+def test_every_script_is_read_in_the_window_before_it_is_allowed():
+    allowing = [line for line in _checkpoint_b().splitlines() if "허용한다" in line]
+    assert allowing
+    for line in allowing:
+        assert "보고 허용" in line, line
+
+
+def test_mcp3_counts_start_lines_by_reason():
+    item = _manual_item("MCP-3")
+    assert "Measure-Object" in item and "$_.reason -eq" in item
+
+
+def test_mcp7_never_changes_the_stored_password():
+    item = _manual_item("MCP-7")
+    assert "비밀번호는 바꾸지 않는다" in item and "`hq-mcp-nouser`" in item
+    assert "틀린 값" not in item
+
+
+def test_mcp8_reads_the_end_line_of_the_stopped_call():
+    item = _manual_item("MCP-8")
+    assert "$_.script -like 'Start-Sleep -Seconds 300*'" in item and "아직 도는 중" in item
+
+
+def test_mcp11_exits_at_once_if_bypass_turns_on_and_removes_its_files():
+    item = _manual_item("MCP-11")
+    assert "바로 `/exit`" in item and "C:\\dev\\hq-ops\\check.txt" in item.split("\n  4. ", 1)[1]
+
+
+def test_the_readme_says_only_what_the_mcp_server_does():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    for words in (
+        "does not connect to an address you forbid",
+        "DNS",
+        "HQ's own window",
+        "recorded in full before it runs",
+        "nothing runs",
+        "are not recorded",
+        "can change the query check",
+    ):
+        assert words in text, words
+    assert "is never contacted from this PC" not in text
+
+
+def test_the_spec_says_what_the_record_holds_and_what_it_leaves_out():
+    text = _spec_section("## 10. ")
+    assert "시작 줄을 쓰지 못하면" in text and "설정 파일이나 서버 목록" in text
+
+
+def test_public_documents_hold_no_real_profile_folder():
+    # 사람의 계정 이름이 든 사용자 폴더 경로를 적지 않는다. <사용자> 같은 자리 표시와 Windows가 만드는 Public,
+    # Administrator(서버 프롬프트의 C:\Users\Administrator\Documents)는 된다
+    for path in (ROOT / "README.md", ROOT / "docs/specs/2026-10-15-hq-design.md", MCP_SPEC, ACCEPT,
+                 ROOT / "docs/acceptance.md", ROOT / "docs/verification.md"):  # fmt: skip
+        text = path.read_text(encoding="utf-8")
+        found = re.findall(r"C:[\\/]Users[\\/](?!<|(?:Public|Administrator)[\\/])[^\\/\s`)]+", text)
+        assert found == [], path.name
 
 
 def test_checkpoint_b_names_what_the_ledger_left_for_the_user():

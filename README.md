@@ -27,7 +27,7 @@ The interface is in Korean.
 - `run_query`: runs a script on those servers without asking you, but only if a check on this PC parses it and finds nothing but allowed read commands and syntax. Anything else is refused.
 - `run_script`: runs any script on those servers. Claude Code asks you before every call.
 
-Every server is off until you turn it on by host. An address you forbid is never contacted from this PC, even if its server was turned on (a script running on another server can still reach it):
+Every server is off until you turn it on by host. The MCP server does not connect to an address you forbid. A host written as a name is resolved and compared with the forbidden list just before each call, so a DNS change after that comparison can slip through. The forbidden list applies to the MCP server only: HQ's own window still checks the port of every server in its list, and a script running on another server can still reach the address.
 
 ```powershell
 uv run --project C:\dev\hq python -m hq.mcp list               # every server and its state; no network
@@ -36,7 +36,7 @@ uv run --project C:\dev\hq python -m hq.mcp off <host>...
 uv run --project C:\dev\hq python -m hq.mcp never <IP>...      # to undo, edit mcp-access.json by hand
 ```
 
-**Register it only in `C:\dev\hq-ops`.** A Claude Code session in `C:\dev\hq` is for working on HQ itself and must not be able to reach real servers, so the server is registered with local scope in a separate folder, never with user scope. It runs from the current files in `C:\dev\hq`, so a change there is live the next time a session in `C:\dev\hq-ops` starts. The paths below assume the repository is at `C:\dev\hq`.
+**Register it only in `C:\dev\hq-ops`.** A Claude Code session in `C:\dev\hq` is for working on HQ itself and must not be able to reach real servers, so the server is registered with local scope in a separate folder, never with user scope. It runs from the current files in `C:\dev\hq`, so a change there is live the next time a session in `C:\dev\hq-ops` starts. That includes changes made by a development session in `C:\dev\hq`, which can change the query check itself. The paths below assume the repository is at `C:\dev\hq`.
 
 Install (section 13.4 of the [MCP design](docs/specs/2026-11-04-hq-mcp-design.md)):
 
@@ -56,7 +56,7 @@ Install (section 13.4 of the [MCP design](docs/specs/2026-11-04-hq-mcp-design.md
 
 **What goes to Claude.** Server names, nicknames, hosts, groups and memos, every script, and what the servers print are sent to Claude (Anthropic) and kept according to your account's data settings. Remove passwords or account details from a server's memo before you turn it on.
 
-**What stays on this PC.** Every script Claude sends is recorded in full in `%LOCALAPPDATA%\hq\logs\mcp-audit-YYYY-MM.jsonl`, one JSON line per event: the start of a call (time, call id, targets, the whole script, its SHA-256, the reason given), its end (status, exit code, time and output length per server) and each script a check refused, with the reason. Server output is not recorded, but a password written into a script is, in plain text. The file is never deleted automatically. The server's own log is `%LOCALAPPDATA%\hq\logs\hq-mcp.log`.
+**What stays on this PC.** The record is `%LOCALAPPDATA%\hq\logs\mcp-audit-YYYY-MM.jsonl`, one JSON line per event. Every script that is sent to a server is recorded in full before it runs, in the start line of its call (time, call id, targets, the whole script, its SHA-256, the reason given); if that line cannot be written, nothing runs. An end line follows with the status, exit code, time and output length per server. Scripts refused by the checks are recorded with the reason when the record can be written. Calls refused for wrong arguments, an unknown target or a problem with the settings or the server list are not recorded. Server output is not recorded, but a password written into a script is, in plain text. The file is never deleted automatically. The server's own log is `%LOCALAPPDATA%\hq\logs\hq-mcp.log`.
 
 **This is not a security boundary.** Claude Code runs under your Windows account, the same one as HQ, so it can decrypt the password files and edit the list of allowed servers with its other tools. The query check and the confirmation prompt reduce accidents in the scripts Claude normally writes; a deliberately crafted script, such as one suggested by text planted in a server's output, can get past the check. The permission settings in `C:\dev\hq-ops` make Claude Code ask before most of its own shell commands and keep its file tools inside that folder, but they match text and live in files your account can change. Section 12 of the MCP design lists what is and is not covered.
 
