@@ -33,8 +33,8 @@ INVENTORY_FILE = "inventory.json"
 USAGE = """\
 사용법:
   python -m hq.mcp list                 모든 서버와 상태(켜짐, 꺼짐, 금지, 쓸 수 없음)
-  python -m hq.mcp on <host>...         켜기. host가 금지 IP인 서버는 거절한다
-  python -m hq.mcp on --group <그룹>    그룹을 켜기. host가 금지 IP인 서버는 건너뛴다
+  python -m hq.mcp on <host>...         켜기. host가 금지 IP이거나 이름에 보이지 않는 글자가 있는 서버는 거절한다
+  python -m hq.mcp on --group <그룹>    그룹을 켜기. host가 금지 IP이거나 이름에 보이지 않는 글자가 있는 서버는 건너뛴다
   python -m hq.mcp off <host>...        끄기
   python -m hq.mcp never <IP>...        금지 목록에 넣고 끄기. 풀려면 mcp-access.json을 직접 고친다"""
 UNCHANGED = "아무것도 바꾸지 않았습니다."

@@ -4,7 +4,7 @@ import json
 import pytest
 
 from hq.inventory import Inventory
-from hq.mcp.access import Access, load_access, load_servers, save_access
+from hq.mcp.access import Access, load_access, load_servers, save_access, usable
 from hq.mcp.cli import main
 
 
@@ -166,13 +166,29 @@ def test_a_name_the_mcp_rule_refuses_is_not_enabled_and_list_says_why(tmp_path, 
     assert not any(char in text for text in texts)
 
 
-def test_the_command_line_uses_the_same_rule_for_a_name_behind_a_clean_nickname(tmp_path):
+@pytest.mark.parametrize(
+    "name, nickname",
+    [(f"웹{RLO}", "웹01"), ("웹\N{HANGUL FILLER}01", "웹")],
+    ids=["rlo-name", "filler-name"],
+)
+def test_the_command_line_uses_the_same_rule_for_a_name_behind_a_clean_nickname(tmp_path, name, nickname):
     inventory(tmp_path, [("웹01", "10.0.1.21", "운영")])
-    edit_first_server(tmp_path, name="웹\N{HANGUL FILLER}01", nickname="웹")
+    edit_first_server(tmp_path, name=name, nickname=nickname)
     code, text = run(tmp_path, "on", "10.0.1.21")
-    assert code == 2 and "보이지 않는 글자" in text and enabled_hosts(tmp_path) == []
+    assert code == 2 and "보이지 않는 글자" in text and "켜지 않습니다" in text and enabled_hosts(tmp_path) == []
+    (server,), _ = load_servers(tmp_path / "inventory.json")
+    save_access(tmp_path / "mcp-access.json", Access(enabled=((server.id, "10.0.1.21"),)))  # 파일을 고쳐 켰다
+    assert usable([server], load_access(tmp_path / "mcp-access.json")) == []  # MCP도 쓰지 않는다
     code, text = run(tmp_path, "list")
-    assert code == 0 and line_with(text, "10.0.1.21").startswith("쓸 수 없음")
+    line = line_with(text, "10.0.1.21")
+    assert code == 0 and line.startswith("쓸 수 없음") and "보이지 않는 글자" in line
+    assert "HQ에서 별명이나 이름을 고치세요" in line and RLO not in text
+
+
+def test_the_usage_says_on_refuses_names_with_hidden_characters(tmp_path):
+    lines = run(tmp_path, "help")[1].splitlines()
+    on_lines = [line for line in lines if "hq.mcp on " in line]
+    assert len(on_lines) == 2 and all("보이지 않는 글자" in line for line in on_lines)
 
 
 def test_list_escapes_the_spaces_and_fillers_the_name_rule_refuses(tmp_path):
