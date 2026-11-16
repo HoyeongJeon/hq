@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+from hq.mcp.runner import STATUS_BY_CODE
+
 ROOT = Path(__file__).resolve().parents[1]
 MCP_SPEC = ROOT / "docs/specs/2026-11-04-hq-mcp-design.md"
 BASE_SPEC = ROOT / "docs/specs/2026-10-15-hq-design.md"
@@ -315,3 +317,55 @@ def test_the_spec_says_how_two_processes_share_the_logs():
     assert "hq-mcp.log`를 함께 쓴다" in _spec_section("## 3. ")
     text = _spec_section("## 10. ")
     assert "원자적" in text and "`call`" in text
+
+
+# 체크포인트 B 전의 마지막 검토에서 고친 것
+
+
+def test_checkpoint_b_skips_what_opens_the_hq_window_when_the_forbidden_server_is_listed():
+    # HQ 창은 열거나 저장할 때 목록의 모든 서버의 5985 포트를 확인한다(금지 서버 포함)
+    prep = _checkpoint_b().split("\n### 준비", 1)[1].split("\n### ", 1)[0]
+    skipped = "`금지 서버가 목록에 있어 건너뜀`"
+    assert skipped in prep and "MCP-7의 2~4번과 MCP-9를 하지 않는다" in prep
+    for item_id in ("MCP-7", "MCP-9"):
+        assert skipped in _manual_item(item_id), item_id
+
+
+def test_checkpoint_b_turns_servers_on_by_host_and_keeps_the_repo_and_the_limit_still():
+    prep = _checkpoint_b().split("\n### 준비", 1)[1].split("\n### ", 1)[0]
+    assert "하나씩" in prep and "`on --group`은 이름으로 등록한 서버도" in prep
+    assert "`C:\\dev\\hq`의 파일을 고치지 않고" in prep and "개발 세션" in prep
+    assert "세션을 하나만" in prep and "16개" in prep
+
+
+def test_the_docs_say_rules_and_templates_are_read_on_every_call():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    spec = _spec_section("### 13.1 ")
+    for name in ("query_rules.json", "mcp-check.ps1", "mcp-run.ps1", "bootstrap.ps1"):
+        assert name in readme and name in spec, name
+    assert "already running" in readme and "이미 떠 있는 세션" in spec
+
+
+def test_the_spec_lists_every_status_a_result_can_have():
+    line = next(line for line in _spec_section("## 9. ").splitlines() if line.startswith("- `status`:"))
+    # runner의 종료 코드 표 밖의 상태: 띄우지 못함, 알 수 없음(runner), 풀지 못함, 시작하지 않음(tools)
+    expected = {*STATUS_BY_CODE.values(), "SPAWN_FAILED", "UNKNOWN", "UNRESOLVED", "NOT_STARTED"}
+    assert sorted(re.findall(r"`([A-Z_]+)`", line)) == sorted(expected)
+
+
+def test_the_spec_says_what_the_limits_and_the_check_cover():
+    assert "프로세스 하나" in _spec_section("### 8.1 ") and "16개" in _spec_section("### 8.1 ")
+    arguments = _spec_section("### 4.5 ")
+    assert "주석" in arguments and "15초 이하" in arguments
+    limits = _spec_section("### 7.3 ")
+    for words in (
+        "PowerShell 5.1",
+        "4.0",
+        "Get-AuthenticodeSignature",
+        "1 | Select-Object @{n='PSPath';e={'\\\\z\\c$\\x'}} | Get-Content",
+        "Win32_SoftwareFeature",
+    ):
+        assert words in limits, words
+    assert "MCP 의존성 추가" not in _spec_section("## 14. ")
+    log = _spec_section("## 3. ")
+    assert "줄을 잃을 수 있다" in log and "실행 기록(10장)" in log

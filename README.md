@@ -36,7 +36,7 @@ uv run --project C:\dev\hq python -m hq.mcp off <host>...
 uv run --project C:\dev\hq python -m hq.mcp never <IP>...      # to undo, edit mcp-access.json by hand
 ```
 
-**Register it only in `C:\dev\hq-ops`.** A Claude Code session in `C:\dev\hq` is for working on HQ itself and must not be able to reach real servers, so the server is registered with local scope in a separate folder, never with user scope. It runs from the current files in `C:\dev\hq`, so a change there is live the next time a session in `C:\dev\hq-ops` starts. That includes changes made by a development session in `C:\dev\hq`, which can change the query check itself. The paths below assume the repository is at `C:\dev\hq`.
+**Register it only in `C:\dev\hq-ops`.** A Claude Code session in `C:\dev\hq` is for working on HQ itself and must not be able to reach real servers, so the server is registered with local scope in a separate folder, never with user scope. It runs from the current files in `C:\dev\hq`. Its Python code is loaded when a session in `C:\dev\hq-ops` starts, but the query rules and PowerShell templates (`query_rules.json`, `mcp-check.ps1`, `mcp-run.ps1`, `bootstrap.ps1`) are read again on every call, so an edit to them takes effect at once, even in a session that is already running; only the list of allowed commands in the tool description stays as it was read at start. That includes changes made by a development session in `C:\dev\hq`, which can change the query check itself. The paths below assume the repository is at `C:\dev\hq`.
 
 Install (section 13.4 of the [MCP design](docs/specs/2026-11-04-hq-mcp-design.md)):
 

@@ -5,9 +5,9 @@ run_query와 run_script는 스펙 8.1의 순서로 간다. 인자, 사용 설정
 기록에 시작을 쓰고(못 쓰면 실행하지 않는다), 서버별 사전 확인 뒤 남은 서버를 스레드로 돌리고, 끝을 쓴다. 서버 하나의
 실패는 그 서버의 status로 알리고 is_error로 표시하지 않는다. 호출 하나는 시작할 때 읽은 목록으로 끝까지 간다.
 
-동시 실행은 Deps.slots 하나로 MCP 서버 전체에서 MAX_PARALLEL개까지다. protocol은 처리기 스레드를 시간 한도 없이
-기다리므로 처리기는 취소 신호를 따르고 언제나 돌아온다. Claude에게 가는 글에는 서버 id, username, 비밀번호 파일 경로,
-예외 글자를 넣지 않는다.
+동시 실행은 Deps.slots 하나로 MCP 서버 프로세스 하나에서 MAX_PARALLEL개까지다(Claude Code 세션마다 프로세스가
+따로다). protocol은 처리기 스레드를 시간 한도 없이 기다리므로 처리기는 취소 신호를 따르고 언제나 돌아온다. Claude에게
+가는 글에는 서버 id, username, 비밀번호 파일 경로, 예외 글자를 넣지 않는다.
 """
 
 import functools
