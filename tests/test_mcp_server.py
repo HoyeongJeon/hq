@@ -228,6 +228,18 @@ def test_the_command_line_prints_a_name_outside_the_code_page(monkeypatch, tmp_p
     assert "웹\\U0001f600 (192.0.2.10)" in ran.stdout.decode("cp949")
 
 
+def test_the_command_line_escapes_a_warning_that_quotes_the_server_list(monkeypatch, tmp_path):
+    # 서버 목록을 읽지 못한 이유에는 파일의 host가 그대로 든다. 손으로 고친 host의 ESC 시퀀스가 터미널에 닿지 않는다
+    (tmp_path / "hq").mkdir()
+    item = {"id": "0" * 32, "name": "웹01", "host": "web\x1b[2J01", "username": "admin"}
+    data = {"version": 1, "settings": {"admin_ips": []}, "servers": [item]}
+    (tmp_path / "hq" / "inventory.json").write_text(json.dumps(data), encoding="utf-8")
+    before = list(logging.getLogger().handlers)
+    ran = run_main(monkeypatch, tmp_path, ["list"])
+    assert ran.code == cli.REFUSED and "web\\x1b[2J01" in ran.stderr and "\x1b" not in ran.stderr
+    assert logging.getLogger().handlers == before
+
+
 def test_a_file_error_ends_the_command_line_with_a_korean_message(monkeypatch, tmp_path):
     add_servers(tmp_path, [("웹01", "", "192.0.2.10")])
     (tmp_path / "hq" / "mcp-access.json.tmp").mkdir()  # 설정을 쓸 임시 파일 자리에 폴더가 있어 쓰지 못한다
