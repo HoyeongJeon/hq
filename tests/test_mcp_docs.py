@@ -306,6 +306,11 @@ def test_the_spec_says_which_characters_a_script_and_a_reason_cannot_hold():
     assert "홀로 쓴 CR" in _spec_section("## 12. ")
 
 
+def test_the_spec_bounds_the_wrong_target_refusal():
+    text = _spec_section("## 9. ")
+    assert "3개까지" in text and "80자" in text and "20개까지" in text and "list_servers를 다시 부르세요" in text
+
+
 def test_the_spec_says_how_two_processes_share_the_logs():
     assert "hq-mcp.log`를 함께 쓴다" in _spec_section("## 3. ")
     text = _spec_section("## 10. ")

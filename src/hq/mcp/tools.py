@@ -76,6 +76,9 @@ _NO_ACCESS_FILE = (
 _NOT_RECORDED = "실행 기록을 쓰지 못해 실행하지 않았습니다."
 _REASONS_SHOWN = 10  # 조회 검사 거절에 적는 이유의 수
 _REASON_CHARS = 200  # 그 이유 하나의 길이. 넘으면 잘라 …로 끝낸다
+_WRONG_SHOWN = 3  # 대상이 맞지 않는 거절에 적는 맞지 않는 대상의 수
+_WRONG_CHARS = 80  # 그 대상 하나의 길이. 넘으면 잘라 …로 끝낸다
+_USABLE_SHOWN = 20  # 같은 거절에 적는 쓸 수 있는 target의 수
 _CANCELLED = "실행을 시작하기 전에 호출이 취소되어 어느 서버에도 접속하지 않았습니다."
 _NO_RESOLVER = "이름을 풀 스레드를 띄우지 못해 어느 서버에도 접속하지 않았습니다. 잠시 뒤 다시 부르세요."
 
@@ -244,10 +247,7 @@ def _run(deps: Deps, tool: str, arguments: dict, cancel: threading.Event) -> Too
     by_target = {target_of(server): server for server in servers}
     wrong = [target for target in request.targets if target not in by_target]
     if wrong:
-        return _refused(
-            f"대상이 맞지 않습니다: {', '.join(wrong)}. list_servers가 준 target을 그대로 쓰세요. "
-            f"쓸 수 있는 target: {', '.join(by_target) or '없음'}"
-        )
+        return _refused(_wrong_targets(wrong, list(by_target)))
     chosen = [by_target[target] for target in request.targets]
     why = _screen(deps, tool, request.script, never)
     if why is not None:
@@ -331,6 +331,21 @@ def _made(char: str) -> str:
     return f"[char]0x{code:X}" if code <= 0xFFFF else f"[char]::ConvertFromUtf32(0x{code:X})"
 
 
+def _wrong_targets(wrong: Sequence[str], usable_targets: Sequence[str]) -> str:
+    """맞지 않는 대상의 거절 글. 서버가 많거나 Claude가 긴 글자를 보내도 짧게 둔다.
+
+    Claude가 보낸 대상은 이름 규칙의 글자(제어 문자 포함)를 지우고 잘라 몇 개만 적는다. 쓸 수 있는 target은 usable이
+    이미 거른 글자다.
+    """
+    shown = ", ".join(_clipped(without_hidden(target), _WRONG_CHARS) for target in wrong[:_WRONG_SHOWN])
+    if len(wrong) > _WRONG_SHOWN:
+        shown += f" 외 {len(wrong) - _WRONG_SHOWN}개"
+    listed = ", ".join(usable_targets[:_USABLE_SHOWN]) or "없음"
+    if len(usable_targets) > _USABLE_SHOWN:
+        listed += f" 외 {len(usable_targets) - _USABLE_SHOWN}개, list_servers를 다시 부르세요"
+    return f"대상이 맞지 않습니다: {shown}. list_servers가 준 target을 그대로 쓰세요. 쓸 수 있는 target: {listed}"
+
+
 def _blank(script: str) -> bool:
     """PowerShell의 주석(# 줄 주석, <# #> 블록 주석)과 빈칸밖에 없으면 참. 앞에서부터 한 번만 훑는다.
 
@@ -369,7 +384,7 @@ def _screen(deps: Deps, tool: str, script: str, never: Sequence[str]) -> str | N
     if verdict.ok:
         return None
     # 이유에는 스크립트의 글자가 들 수 있다. 이름 규칙의 글자를 지운 뒤 하나씩 자른다
-    shown = [_clipped(without_hidden(reason)) for reason in verdict.reasons[:_REASONS_SHOWN]]
+    shown = [_clipped(without_hidden(reason), _REASON_CHARS) for reason in verdict.reasons[:_REASONS_SHOWN]]
     lines = ["조회 검사에 걸려 어느 서버에도 접속하지 않았습니다.", *shown]
     if len(verdict.reasons) > _REASONS_SHOWN:  # 거절 글은 짧게 둔다. Claude Code는 긴 isError 글의 가운데를 버린다
         lines.append(f"외 {len(verdict.reasons) - _REASONS_SHOWN}건")
@@ -381,8 +396,8 @@ def _screen(deps: Deps, tool: str, script: str, never: Sequence[str]) -> str | N
     return "\n".join(lines)
 
 
-def _clipped(text: str) -> str:
-    return text if len(text) <= _REASON_CHARS else text[: _REASON_CHARS - 1] + "…"
+def _clipped(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _resolve_all(deps: Deps, hosts: Sequence[str], cancel: threading.Event) -> list[list[str] | None] | str:

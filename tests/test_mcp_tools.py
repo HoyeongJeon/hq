@@ -324,6 +324,25 @@ def test_a_wrong_target_is_refused_and_the_valid_ones_are_listed(tmp_path):
     assert fakes.probe.calls == [] and fakes.resolve.calls == [] and fakes.execute.jobs == []
 
 
+def test_a_wrong_target_is_cleaned_cut_and_only_three_are_shown(tmp_path):
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
+    wrong = ["\x1b[2J" + "가" * 300, "둘째", "셋째", "넷째", "다섯째"]
+    text = call(handlers, "run_query", targets=wrong, script="Get-Date").text
+    assert "[2J" + "가" * 76 + "…" in text and "가" * 77 not in text  # 지운 뒤 80자에서 자른다
+    assert "둘째, 셋째 외 2개." in text and "넷째" not in text and "다섯째" not in text
+    assert text.isprintable() and f"쓸 수 있는 target: {WEB}" in text
+    assert fakes.execute.jobs == [] and fakes.audit_lines() == []
+
+
+def test_a_wrong_target_reply_stays_short_with_two_thousand_servers(tmp_path):
+    servers = [(f"서버{n}", f"h{n}.example") for n in range(2000)]
+    handlers, fakes = world(tmp_path, servers, on=[host for _, host in servers])
+    result = call(handlers, "run_query", targets=["\x1b" + "x" * 300], script="Get-Date")
+    assert result.is_error and len(result.text) < 4000 and result.text.isprintable(), result.text
+    assert "서버19 (h19.example) 외 1980개, list_servers를 다시 부르세요" in result.text
+    assert "서버20 (h20.example)" not in result.text and fakes.resolve.calls == []
+
+
 @pytest.mark.parametrize(
     "args",
     [
