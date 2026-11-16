@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from hq.mcp.runner import RunOutcome
 
 RESULT_BUDGET = 30_000  # 이 크기면 글자 수는 50,000 아래이고, 한글만 있어도 7,500자다(스펙 9장)
+MEMO_CUT = "…(잘림)"  # list_servers에서 앞부분만 보낸 메모의 끝
 # 줄바꿈(\x0a)과 탭(\x09)을 뺀 C0, DEL, C1. 침해된 서버의 출력에 터미널 제어 문자가 섞일 수 있다. 화면에 보이지 않는
 # 유니코드 태그 문자(U+E0000~U+E007F)와 글자 순서를 바꿔 보이게 하는 방향 제어 문자(U+202A~U+202E, U+2066~U+2069)도
 # 지운다. 사용자는 못 보고 Claude만 읽는 글을 심는 데 쓰일 수 있다(스펙 9장)
@@ -45,6 +46,42 @@ def build_result(outcomes: Sequence[RunOutcome], *, budget: int = RESULT_BUDGET)
         cut = len(kept_output) < len(output) or len(kept_errors) < len(errors)
         rows.append(_row(outcome, kept_output, kept_errors, outcome.truncated or cut))
     return _dumps(rows)
+
+
+def build_server_list(rows: Sequence[dict], *, budget: int = RESULT_BUDGET) -> str:
+    """list_servers의 JSON 글자 {"servers": rows}. 크기는 build_result와 같은 셈법으로 budget 안에 둔다.
+
+    넘으면 memo만 줄인다. 서버마다 몫을 공평하게 나눠(_shares) 앞에서부터 남기고 끝에 MEMO_CUT을 붙이며, 몇 개를
+    줄였는지 note가 알린다. 다른 칸은 자르지 않는다. 틀(모든 memo 자리에 MEMO_CUT, 가장 긴 note)만으로 넘으면 memo를
+    모두 빼고 note가 그렇게 알린다. 그때만 결과가 budget을 넘을 수 있다.
+    """
+    whole = _server_list(rows)
+    if weighted_size(whole) <= budget:
+        return whole
+    memos = [row["memo"] for row in rows]
+    frame = _server_list([{**row, "memo": MEMO_CUT} for row in rows], _memos_cut(len(rows)))
+    room = budget - weighted_size(frame)
+    if room < 0:
+        dropped = f"응답 크기 한도 때문에 메모 {sum(1 for memo in memos if memo)}개를 모두 뺐습니다."
+        return _server_list([{**row, "memo": ""} for row in rows], dropped)
+    needs = [_json_size(memo) for memo in memos]
+    kept = []
+    for row, memo, need, share in zip(rows, memos, needs, _shares(needs, room), strict=True):
+        # 틀이 서버마다 MEMO_CUT 자리를 이미 셌으므로, 자른 memo도 몫에 MEMO_CUT을 더한 만큼만 쓴다
+        kept.append(row if need <= share else {**row, "memo": _fit(memo, share) + MEMO_CUT})
+    cut = sum(1 for old, new in zip(rows, kept, strict=True) if new is not old)
+    return _server_list(kept, _memos_cut(cut))
+
+
+def _server_list(rows: Sequence[dict], note: str | None = None) -> str:
+    value: dict = {"servers": list(rows)}
+    if note is not None:
+        value["note"] = note
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _memos_cut(count: int) -> str:
+    return f"응답 크기 한도 때문에 메모 {count}개는 앞부분만 보냈습니다. 그 메모는 {MEMO_CUT}로 끝납니다."
 
 
 def _dumps(rows: list[dict]) -> str:

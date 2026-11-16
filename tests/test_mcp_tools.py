@@ -5,6 +5,8 @@
 
 import dataclasses
 import json
+import os
+import re
 import threading
 import time
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ from hq.mcp import tools
 from hq.mcp.audit import AuditLog
 from hq.mcp.psrun import PsResult
 from hq.mcp.querycheck import Verdict, check_query, load_rules
+from hq.mcp.results import MEMO_CUT, RESULT_BUDGET, weighted_size
 from hq.mcp.runner import RunOutcome, run_on_server
 from hq.mcp.tools import DESCRIPTION_MAX, SAFETY, Deps, build_handlers, build_tools, descriptions
 
@@ -84,7 +87,7 @@ def world(
     if servers is not None:
         items = []
         for number, (name, host, *extra) in enumerate(servers):
-            ids[host] = IDS[number] * 32
+            ids[host] = IDS[number] * 32 if number < len(IDS) else f"{number:032x}"
             item = {"id": ids[host], "name": name, "host": host, "username": "admin"}
             items.append({**item, "nickname": "", "group": "", "memo": "", **(extra[0] if extra else {})})
         data = {"version": 1, "settings": {"admin_ips": []}, "servers": items}
@@ -187,6 +190,85 @@ def test_list_servers_cleans_the_name_when_the_nickname_forms_the_target(tmp_pat
     handlers, _ = world(tmp_path, [("웹\x1b[2J01", "10.0.1.21", extra)], on=["10.0.1.21"])
     [server] = json.loads(call(handlers, "list_servers").text)["servers"]
     assert (server["target"], server["name"]) == ("웹 (10.0.1.21)", "웹[2J01")
+
+
+def test_a_long_server_list_cuts_only_memos_and_says_how_many(tmp_path):
+    servers = [(f"서버{n}", f"192.0.2.{10 + n}", {"group": "운영", "memo": "가" * 4000}) for n in range(30)]
+    servers.append(("짧은메모", "192.0.2.99", {"memo": "짧다"}))
+    handlers, _ = world(tmp_path, servers, on=[host for _, host, _ in servers])
+    text = call(handlers, "list_servers").text
+    reply = json.loads(text)
+    assert weighted_size(text) <= RESULT_BUDGET
+    *long, short = reply["servers"]
+    assert [(s["target"], s["name"], s["host"], s["group"]) for s in long] == [
+        (f"서버{n} (192.0.2.{10 + n})", f"서버{n}", f"192.0.2.{10 + n}", "운영") for n in range(30)
+    ]
+    assert all(s["memo"].endswith(MEMO_CUT) and s["memo"].startswith("가") for s in long)
+    lengths = {len(s["memo"]) for s in long}
+    assert max(lengths) - min(lengths) <= 1 and min(lengths) > 100  # 서버마다 공평하게 나눈다
+    assert short["memo"] == "짧다" and "30개" in reply["note"]
+
+
+def test_a_server_list_too_big_even_without_memos_drops_every_memo(tmp_path):
+    big = {"nickname": "별" * 50, "group": "그" * 50, "memo": "메모"}
+    servers = [("이" * 99 + str(n % 10), f"192.0.2.{10 + n}", big) for n in range(40)]
+    handlers, _ = world(tmp_path, servers, on=[host for _, host, _ in servers])
+    reply = json.loads(call(handlers, "list_servers").text)
+    assert len(reply["servers"]) == 40 and all(s["memo"] == "" for s in reply["servers"])
+    assert all(s["name"].startswith("이" * 99) and s["nickname"] == "별" * 50 for s in reply["servers"])
+    assert "모두 뺐" in reply["note"] and "40개" in reply["note"]
+
+
+def test_a_short_server_list_has_no_note(tmp_path):
+    handlers, _ = world(tmp_path, [("웹01", "10.0.1.21", {"memo": "메모"})], on=["10.0.1.21"])
+    assert "note" not in json.loads(call(handlers, "list_servers").text)
+
+
+def leaks_a_path(text, tmp_path):
+    """경로 구분자, 드라이브 글자, 임시 폴더 이름, 이 PC의 사용자 폴더 이름 중 하나라도 있으면 참."""
+    profile = os.path.basename(os.environ.get("USERPROFILE", ""))
+    return (
+        "\\" in text
+        or "/" in text
+        or re.search(r"(?<![A-Za-z])[A-Za-z]:", text) is not None
+        or tmp_path.name in text
+        or "pytest-of" in text
+        or (bool(profile) and profile in text)
+    )
+
+
+def break_inventory_by_folder(tmp_path):
+    (tmp_path / "inventory.json").unlink()
+    (tmp_path / "inventory.json").mkdir()  # 폴더라 읽을 수 없다
+
+
+def break_access_by_folder(tmp_path):
+    (tmp_path / "mcp-access.json").unlink()
+    (tmp_path / "mcp-access.json").mkdir()
+
+
+@pytest.mark.parametrize(
+    "spoil, file, cause",
+    [
+        (lambda p: (p / "inventory.json").unlink(), "inventory.json", "없습니다"),
+        (break_inventory_by_folder, "inventory.json", "읽을 수 없습니다"),
+        (lambda p: (p / "inventory.json").write_text("{깨짐", encoding="utf-8"), "inventory.json", "모양"),
+        (break_access_by_folder, "mcp-access.json", "읽을 수 없"),
+        (lambda p: (p / "mcp-access.json").write_text("{broken", encoding="utf-8"), "mcp-access.json", "모양"),
+        (lambda p: (p / "mcp-access.json").unlink(), "mcp-access.json", "없어"),
+    ],
+)
+def test_problems_reach_claude_by_file_name_and_a_fixed_cause_only(tmp_path, caplog, spoil, file, cause):
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
+    spoil(tmp_path)
+    note = json.loads(call(handlers, "list_servers").text)["note"]
+    refused = call(handlers, "run_query", targets=[WEB], script="Get-Date")
+    for text in (note, refused.text):
+        assert f"({file})" in text and cause in text, text
+        assert not leaks_a_path(text, tmp_path), text
+    assert refused.is_error and fakes.execute.jobs == []
+    if cause != "없어":  # 사람이 볼 전체 이유(경로 포함)는 로그에 남는다
+        assert file in caplog.text and tmp_path.name in caplog.text
 
 
 def test_a_missing_inventory_gives_an_empty_list_with_a_reason(tmp_path):
@@ -747,6 +829,31 @@ def test_descriptions_start_with_the_safety_text_and_fit_4096(tmp_path):
     for word in ("Get-CimInstance", "-replace", "-f", "try", "Uninstall", "run_script", "output_chars"):
         assert word in texts["run_query"]
     assert [t.meta for t in build_tools(rules)] == [None, None, {"anthropic/requiresUserInteraction": True}]
+
+
+def test_the_query_description_takes_methods_and_remote_parameters_from_the_rules():
+    rules = load_rules()
+    assert "Substring" in descriptions(rules)["run_query"]
+    rules["instance_methods"] = [name for name in rules["instance_methods"] if name != "Substring"] + ["ToTitleCase"]
+    rules["static_methods"]["math"] = [*rules["static_methods"]["math"], "Sqrt"]
+    rules["remote_params"] = [*rules["remote_params"], "Zone"]
+    rules["remote_param_aliases"]["Get-Volume"] = ["Peer"]
+    text = descriptions(rules)["run_query"]
+    for word in ("ToTitleCase", "[math]::", "Sqrt", "-Zone", "Get-Volume -Peer"):
+        assert word in text, word
+    assert "Substring" not in text  # 설명에 따로 적어 둔 목록이 없다
+    real = load_rules()
+    statics = [name for names in real["static_methods"].values() for name in names]
+    for name in real["instance_methods"] + real["remote_params"] + statics:
+        assert name in descriptions(real)["run_query"], name
+
+
+def test_a_check_refusal_lists_at_most_ten_reasons(tmp_path):
+    reasons = tuple(f"COMMAND: 명령{n} (줄 {n})" for n in range(1, 26))
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"], verdict=Verdict(False, reasons))
+    text = call(handlers, "run_query", targets=[WEB], script="Get-Date").text
+    assert "명령10 " in text and "명령11 " not in text and "외 15건" in text and "run_script" in text
+    assert fakes.audit_lines()[-1]["why"] == text
 
 
 def test_the_safety_text_is_the_one_the_design_sets():

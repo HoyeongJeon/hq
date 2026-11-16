@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from hq.mcp.results import build_result, clean_text, weighted_size
+from hq.mcp.results import MEMO_CUT, build_result, build_server_list, clean_text, weighted_size
 from hq.mcp.runner import RunOutcome
 
 
@@ -144,3 +144,45 @@ def test_odd_characters_are_cut_into_valid_json_at_every_size(truncated):
         assert cleaned.startswith(row["output"]) and cleaned.startswith(row["errors"])
         last_kept.add(row["output"][-1:])
     assert chr(0xD83D) in last_kept  # 두 글자 사이에서 자른 경우도 지났다
+
+
+def server_rows(count, memo_length):
+    memo = '메모 "x"\\\n' * memo_length  # 따옴표, 역슬래시, 줄바꿈은 JSON에서 두 글자가 된다
+    return [
+        {
+            "target": f"서버{n} (192.0.2.{n})",
+            "name": f"서버{n}",
+            "nickname": "",
+            "host": f"192.0.2.{n}",
+            "group": "운영",
+            "memo": memo * (n % 3),
+            "has_password": True,
+        }
+        for n in range(count)
+    ]
+
+
+@pytest.mark.parametrize("budget", [4_000, 9_000, 30_000])
+def test_a_server_list_fits_the_budget_by_cutting_only_memos(budget):
+    rows = server_rows(20, 300)
+    text = build_server_list(rows, budget=budget)
+    reply = json.loads(text)
+    assert weighted_size(text) <= budget < weighted_size(build_server_list(rows, budget=10**9))
+    for row, sent in zip(rows, reply["servers"], strict=True):
+        assert {k: v for k, v in sent.items() if k != "memo"} == {k: v for k, v in row.items() if k != "memo"}
+        cut = sent["memo"].endswith(MEMO_CUT)
+        assert sent["memo"] == row["memo"] or (cut and row["memo"].startswith(sent["memo"][: -len(MEMO_CUT)]))
+    cut = sum(sent["memo"] != row["memo"] for row, sent in zip(rows, reply["servers"], strict=True))
+    assert cut > 0 and f"메모 {cut}개" in reply["note"]
+
+
+def test_a_server_list_that_fits_is_unchanged_and_has_no_note():
+    rows = server_rows(3, 2)
+    assert json.loads(build_server_list(rows)) == {"servers": rows}
+
+
+def test_a_server_list_whose_frame_is_over_the_budget_drops_every_memo():
+    rows = server_rows(20, 300)
+    reply = json.loads(build_server_list(rows, budget=1_000))
+    assert [row["memo"] for row in reply["servers"]] == [""] * 20
+    assert f"메모 {sum(1 for row in rows if row['memo'])}개를 모두 뺐습니다" in reply["note"]

@@ -16,7 +16,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from hq.fileops import read_text_with_retry, replace_with_retry
 from hq.inventory import Inventory, InventoryError, Server
@@ -40,7 +40,15 @@ _INVENTORY_UNREADABLE = "서버 목록 파일(inventory.json)을 읽을 수 없�
 class Access:
     enabled: tuple[tuple[str, str], ...] = ()  # (서버 id, 소문자 host)
     never: tuple[str, ...] = ()  # canonical_ip로 고친 글자
-    problem: str | None = None  # 파일이 깨졌을 때의 이유. 이때 enabled와 never는 비어 있다
+    # 파일이 깨졌을 때 사람에게 보이는 이유(경로와 원인 글자). 이때 enabled와 never는 비어 있다
+    problem: str | None = None
+    summary: str | None = None  # 같은 문제를 파일 이름과 정해진 원인으로만 적은 글. Claude에게는 이것을 보낸다
+
+
+class ServerList(NamedTuple):
+    servers: list[Server]
+    problem: str | None = None  # 사람에게 보이는 이유. 경로가 들 수 있다. 문제가 있으면 servers는 비어 있다
+    summary: str | None = None  # 같은 문제를 파일 이름과 정해진 원인으로만 적은 글. Claude에게는 이것을 보낸다
 
 
 class AccessError(Exception):
@@ -54,16 +62,20 @@ def load_access(path: Path) -> Access:
     except FileNotFoundError:
         return Access()
     except (OSError, ValueError) as exc:  # 폴더이거나 계속 잠겨 있거나 UTF-8이 아니다
-        return _broken(path, f"읽을 수 없습니다: {exc}")
+        summary = f"사용 설정 파일({path.name})을 읽을 수 없어 모든 서버를 끈 것으로 봅니다."
+        return _broken(path, f"읽을 수 없습니다: {exc}", summary)
     try:
         enabled, never = _parse(text)
     except ValueError as exc:
-        return _broken(path, str(exc))
+        summary = f"사용 설정 파일({path.name})의 내용이 정해진 모양이 아니어서 모든 서버를 끈 것으로 봅니다."
+        return _broken(path, str(exc), summary)
     return Access(enabled=enabled, never=never)
 
 
-def _broken(path: Path, reason: str) -> Access:
-    return Access(problem=f"사용 설정 파일에 문제가 있어 모든 서버를 끈 것으로 봅니다: {path} ({reason})")
+def _broken(path: Path, reason: str, summary: str) -> Access:
+    return Access(
+        problem=f"사용 설정 파일에 문제가 있어 모든 서버를 끈 것으로 봅니다: {path} ({reason})", summary=summary
+    )
 
 
 def _parse(text: str) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
@@ -160,22 +172,37 @@ def target_of(server: Server) -> str:
 
 
 def load_servers(inventory_path: Path) -> tuple[list[Server], str | None]:
-    """서버 목록을 새로 읽는다(저장하지 않는다). (목록, 문제). 문제가 있으면 목록은 비어 있다."""
+    """서버 목록을 새로 읽는다(저장하지 않는다). (목록, 사람에게 보이는 문제). 문제가 있으면 목록은 비어 있다."""
+    servers, problem, _ = load_server_list(inventory_path)
+    return servers, problem
+
+
+def load_server_list(inventory_path: Path) -> ServerList:
+    """load_servers와 같고, Claude에게 보낼 짧은 문제(summary)도 준다. summary에는 경로도 예외 글자도 없다."""
+    name = inventory_path.name
     if not inventory_path.exists():
-        return [], f"서버 목록 파일이 없습니다: {inventory_path}. HQ에서 서버를 먼저 등록하세요."
+        return ServerList(
+            [],
+            f"서버 목록 파일이 없습니다: {inventory_path}. HQ에서 서버를 먼저 등록하세요.",
+            f"서버 목록 파일({name})이 없습니다. HQ에서 서버를 먼저 등록하세요.",
+        )
+    unreadable = f"서버 목록 파일({name})을 읽을 수 없습니다. HQ 창을 열어 확인하세요."
     inventory = Inventory(inventory_path)
     attempts = _READ_ATTEMPTS
     while True:
         try:
             inventory.load()
-            return inventory.servers, None
+            return ServerList(inventory.servers)
         except InventoryError as exc:
             if not isinstance(exc.__cause__, PermissionError):
                 _log.warning("서버 목록 파일을 읽을 수 없습니다: %s", exc)
-                return [], _INVENTORY_UNREADABLE
+                if isinstance(exc.__cause__, OSError):
+                    return ServerList([], _INVENTORY_UNREADABLE, unreadable)
+                malformed = f"서버 목록 파일({name})의 내용이 정해진 모양이 아닙니다. HQ 창을 열어 확인하세요."
+                return ServerList([], _INVENTORY_UNREADABLE, malformed)
             attempts -= 1
             if attempts == 0:  # 잠긴 경우의 글에는 파일 경로만 있다
-                return [], str(exc)
+                return ServerList([], str(exc), unreadable)
         time.sleep(_READ_DELAY)
 
 

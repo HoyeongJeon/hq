@@ -24,12 +24,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hq.inventory import Server
-from hq.mcp.access import canonical_ip, load_access, load_servers, target_of, usable
+from hq.mcp.access import canonical_ip, load_access, load_server_list, target_of, usable
 from hq.mcp.audit import AuditLog
 from hq.mcp.cli import ACCESS_FILE, INVENTORY_FILE
 from hq.mcp.protocol import INTERNAL_ERROR_TEXT, Handler, Tool, ToolResult
 from hq.mcp.querycheck import Verdict
-from hq.mcp.results import build_result, clean_text
+from hq.mcp.results import build_result, build_server_list, clean_text
 from hq.mcp.runner import GRACE_SECONDS, RunOutcome, ServerJob
 from hq.mcp.schema import LIST_SERVERS, RUN_QUERY, RUN_SCRIPT, tool_shapes
 from hq.mcp.textcheck import never_ip_in
@@ -75,6 +75,7 @@ _NO_ACCESS_FILE = (
     "사용자가 명령줄에서 python -m hq.mcp on <host>로 서버를 켜야 합니다."
 )
 _NOT_RECORDED = "실행 기록을 쓰지 못해 실행하지 않았습니다."
+_REASONS_SHOWN = 10  # 조회 검사 거절에 적는 이유의 수
 _CANCELLED = "실행을 시작하기 전에 호출이 취소되어 어느 서버에도 접속하지 않았습니다."
 
 _LIST_SERVERS = (
@@ -84,10 +85,8 @@ _RUN_QUERY_HEAD = [
     "서버에서 조회 스크립트를 확인 창 없이 실행합니다. 이 PC가 먼저 검사해 조회로 확인된 스크립트만 실행합니다. "
     "targets에는 list_servers가 준 target을 그대로 씁니다.",
     "검사 요약: 아래 허용 명령만 이름을 그대로 적어 씁니다(대소문자 무시). `&`와 `.` 호출, 변수나 경로로 적은 "
-    "명령은 안 됩니다. 메서드 호출은 정해진 이름(ToString, Trim, Split, Substring, Contains, StartsWith 등)만 "
-    "됩니다. 파일로 가는 리디렉션(`>`, `>>`, `2>`)은 안 되고 `2>$null`과 `2>&1`은 됩니다. 다른 컴퓨터로 가는 "
-    "매개변수(-ComputerName, -CimSession, -Session, -Credential과 그 별칭, 줄임)와 `\\\\`로 시작하는 경로는 "
-    "안 됩니다. 스플래팅(`@p`)과 함수 정의도 안 됩니다.",
+    "명령은 안 됩니다. 파일로 가는 리디렉션(`>`, `>>`, `2>`)은 안 되고 `2>$null`과 `2>&1`은 됩니다. `\\\\`로 "
+    "시작하는 경로, 스플래팅(`@p`), 함수 정의도 안 됩니다.",
 ]
 _RUN_QUERY_TAIL = [
     "막힌 것의 대안: WMI는 Get-CimInstance(인자는 글자 그대로), 글자 바꾸기는 -replace, 서식은 -f, 명령이 "
@@ -125,10 +124,22 @@ class Deps:
 
 
 def descriptions(rules: dict) -> dict[str, str]:
-    """기능 이름 → 설명. 모두 SAFETY로 시작한다. run_query의 명령 목록은 조회 검사의 자료 파일에서 만든다."""
+    """기능 이름 → 설명. 모두 SAFETY로 시작한다.
+
+    run_query의 명령, 메서드, 원격 매개변수 목록은 조회 검사의 자료 파일(rules)에서 만든다. 두 벌을 두지 않는다.
+    """
     external = ", ".join(_external(name, allowed) for name, allowed in rules["external"].items())
+    methods = " ".join(rules["instance_methods"])
+    statics = ", ".join(f"[{kind}]::{' '.join(names)}" for kind, names in rules["static_methods"].items())
+    remote = " ".join(f"-{name}" for name in rules["remote_params"])
+    per_command = ", ".join(
+        f"{command} {' '.join(f'-{name}' for name in names)}"
+        for command, names in rules["remote_param_aliases"].items()
+    )
     query = [
         *_RUN_QUERY_HEAD,
+        f"메서드는 이 이름만 부를 수 있습니다: {methods}. 정적 메서드: {statics}.",
+        f"다른 컴퓨터로 가는 매개변수는 그 별칭과 줄임까지 안 됩니다: {remote}. 명령별로 더: {per_command}.",
         "허용 명령: " + " ".join(rules["commands"]),
         "줄임말: " + " ".join(rules["aliases"]),
         "외부 명령(인자까지 고정): " + external,
@@ -184,21 +195,27 @@ def _list_servers(deps: Deps) -> ToolResult:
         }
         for server in servers
     ]
-    return _json({"servers": rows})
+    return ToolResult(build_server_list(rows))
 
 
 def _load(data: Path) -> tuple[list[Server], tuple[str, ...], str | None]:
-    """호출마다 새로 읽은 (쓸 수 있는 서버, never, 문제). 문제가 있으면 서버는 비어 있다."""
+    """호출마다 새로 읽은 (쓸 수 있는 서버, never, 문제). 문제가 있으면 서버는 비어 있다.
+
+    문제는 Claude에게 가므로 파일 이름과 정해진 원인만 적은 글(summary)이다. 경로와 예외 글자가 든 전체 이유는 로그에
+    남긴다(스펙 9장 끝 줄).
+    """
     access_path = data / ACCESS_FILE
     access = load_access(access_path)
     if access.problem:
-        return [], (), access.problem
+        _log.warning("%s", access.problem)
+        return [], (), access.summary
     if not os.path.exists(access_path):  # load_access는 없는 파일을 문제로 보지 않는다(모두 꺼짐)
         return [], (), _NO_ACCESS_FILE
-    servers, problem = load_servers(data / INVENTORY_FILE)
-    if problem:
-        return [], (), problem
-    return usable(servers, access), access.never, None
+    listed = load_server_list(data / INVENTORY_FILE)
+    if listed.problem:
+        _log.warning("%s", listed.problem)
+        return [], (), listed.summary
+    return usable(listed.servers, access), access.never, None
 
 
 @dataclass(frozen=True)
@@ -317,7 +334,9 @@ def _screen(deps: Deps, tool: str, script: str, never: Sequence[str]) -> str | N
     verdict = deps.check(script)
     if verdict.ok:
         return None
-    lines = ["조회 검사에 걸려 어느 서버에도 접속하지 않았습니다.", *verdict.reasons]
+    lines = ["조회 검사에 걸려 어느 서버에도 접속하지 않았습니다.", *verdict.reasons[:_REASONS_SHOWN]]
+    if len(verdict.reasons) > _REASONS_SHOWN:  # 거절 글은 짧게 둔다. Claude Code는 긴 isError 글의 가운데를 버린다
+        lines.append(f"외 {len(verdict.reasons) - _REASONS_SHOWN}건")
     if any(reason.startswith("PARSER_HAZARD") for reason in verdict.reasons):
         lines.append(
             "이 스크립트는 검사기가 읽지 않는 모양입니다. 조회라도 run_script로 보내세요(사용자가 확인합니다)."

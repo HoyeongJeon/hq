@@ -11,6 +11,7 @@ from hq.mcp.access import (
     AccessError,
     canonical_ip,
     load_access,
+    load_server_list,
     load_servers,
     resolve_host,
     save_access,
@@ -223,6 +224,53 @@ def test_load_servers_keeps_usernames_and_server_ids_out_of_the_problem(tmp_path
     assert servers == [] and problem == UNREADABLE
     assert username not in problem and server_id not in problem
     assert leak in caplog.text  # 자세한 이유는 로그에만 남는다
+
+
+def test_a_broken_settings_file_has_a_summary_with_only_the_file_name(tmp_path):
+    (tmp_path / "f").write_text("{broken", encoding="utf-8")
+    broken = load_access(tmp_path / "f")
+    assert broken.summary == "사용 설정 파일(f)의 내용이 정해진 모양이 아니어서 모든 서버를 끈 것으로 봅니다."
+    assert str(tmp_path) in broken.problem  # 사람에게 보이는 이유는 그대로다
+    folder = load_access(tmp_path)  # 폴더라 읽을 수 없다
+    assert folder.summary == f"사용 설정 파일({tmp_path.name})을 읽을 수 없어 모든 서버를 끈 것으로 봅니다."
+    assert load_access(tmp_path / "없음").summary is None
+
+
+INVENTORY_MISSING = "서버 목록 파일(inventory.json)이 없습니다. HQ에서 서버를 먼저 등록하세요."
+INVENTORY_UNREADABLE = "서버 목록 파일(inventory.json)을 읽을 수 없습니다. HQ 창을 열어 확인하세요."
+INVENTORY_MALFORMED = "서버 목록 파일(inventory.json)의 내용이 정해진 모양이 아닙니다. HQ 창을 열어 확인하세요."
+
+
+@pytest.mark.parametrize(
+    "cause, summary",
+    [
+        (PermissionError(5, "Access is denied"), INVENTORY_UNREADABLE),  # 계속 잠겨 있다
+        (OSError(22, "Invalid argument"), INVENTORY_UNREADABLE),
+        (ValueError("버전 2"), INVENTORY_MALFORMED),
+        (TypeError("목록이 아님"), INVENTORY_MALFORMED),
+    ],
+    ids=["locked", "os-error", "value", "type"],
+)
+def test_the_server_list_summary_gives_a_fixed_cause_without_paths(tmp_path, monkeypatch, cause, summary):
+    (tmp_path / "inventory.json").write_text("{}", encoding="utf-8")
+
+    def failing(self):
+        raise InventoryError(f"서버 목록 파일을 읽을 수 없어 저장을 막았습니다: {tmp_path}") from cause
+
+    monkeypatch.setattr(Inventory, "load", failing)
+    monkeypatch.setattr("hq.mcp.access.time.sleep", lambda seconds: None)
+    listed = load_server_list(tmp_path / "inventory.json")
+    assert (listed.servers, listed.summary) == ([], summary) and listed.problem
+    assert load_servers(tmp_path / "inventory.json") == ([], listed.problem)  # 사람에게 보이는 이유는 그대로다
+
+
+def test_the_server_list_summary_of_a_missing_or_good_file(tmp_path):
+    missing = load_server_list(tmp_path / "inventory.json")
+    assert missing.summary == INVENTORY_MISSING and str(tmp_path) in missing.problem
+    added = Inventory(tmp_path / "inventory.json")
+    added.add({"name": "웹", "host": "10.0.1.21", "username": "admin"})
+    added.save()
+    assert load_server_list(tmp_path / "inventory.json") == (added.servers, None, None)
 
 
 def test_save_then_load_round_trips(tmp_path):
