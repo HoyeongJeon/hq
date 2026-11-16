@@ -228,16 +228,29 @@ def test_the_command_line_prints_a_name_outside_the_code_page(monkeypatch, tmp_p
     assert "웹\\U0001f600 (192.0.2.10)" in ran.stdout.decode("cp949")
 
 
-def test_the_command_line_escapes_a_warning_that_quotes_the_server_list(monkeypatch, tmp_path):
-    # 서버 목록을 읽지 못한 이유에는 파일의 host가 그대로 든다. 손으로 고친 host의 ESC 시퀀스가 터미널에 닿지 않는다
+def test_the_command_line_escapes_the_problem_that_quotes_the_server_list(monkeypatch, tmp_path):
+    # 서버 목록을 읽지 못한 이유에는 파일의 host가 그대로 든다. 명령줄은 그 이유를 표준 출력에 찍는다(cli.shown).
+    # 손으로 고친 host의 ESC 시퀀스가 터미널에 닿지 않는다
     (tmp_path / "hq").mkdir()
     item = {"id": "0" * 32, "name": "웹01", "host": "web\x1b[2J01", "username": "admin"}
     data = {"version": 1, "settings": {"admin_ips": []}, "servers": [item]}
     (tmp_path / "hq" / "inventory.json").write_text(json.dumps(data), encoding="utf-8")
     before = list(logging.getLogger().handlers)
     ran = run_main(monkeypatch, tmp_path, ["list"])
-    assert ran.code == cli.REFUSED and "web\\x1b[2J01" in ran.stderr and "\x1b" not in ran.stderr
+    stdout = ran.stdout.decode("cp949")
+    assert ran.code == cli.REFUSED and "web\\x1b[2J01" in stdout and "\x1b" not in stdout + ran.stderr
     assert logging.getLogger().handlers == before
+
+
+def test_a_warning_logged_during_the_command_line_reaches_stderr_escaped(monkeypatch, tmp_path):
+    # 명령줄에서 남는 경고는 __main__의 처리기가 cli.shown을 거쳐 표준 오류에 찍는다
+    def warning_command(argv, *, data, out):
+        logging.getLogger("hq.mcp.access").warning("host web\x1b[2J01")
+        return cli.OK
+
+    monkeypatch.setattr(cli, "main", warning_command)
+    ran = run_main(monkeypatch, tmp_path, ["list"])
+    assert ran.code == cli.OK and "web\\x1b[2J01" in ran.stderr and "\x1b" not in ran.stderr
 
 
 def test_a_file_error_ends_the_command_line_with_a_korean_message(monkeypatch, tmp_path):

@@ -7,9 +7,7 @@
 import contextlib
 import ipaddress
 import json
-import logging
 import os
-import re
 import socket
 import threading
 import time
@@ -22,13 +20,9 @@ from typing import Any, NamedTuple
 from hq.fileops import read_text_with_retry, replace_with_retry
 from hq.inventory import Inventory, InventoryError, Server
 
-_log = logging.getLogger(__name__)
-
 VERSION = 1
 _KEYS = {"version", "enabled", "never"}
 _ITEM_KEYS = {"id", "host"}
-# C0, DEL, C1. 대상 글자는 확인 창과 결과에 그대로 찍히므로 화면을 지우는 ESC 시퀀스 같은 것이 든 별명은 쓰지 않는다
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # target에 들면 쓰지 않는 글자의 Unicode 범주: 제어(Cc), 서식(Cf: 방향 제어, 폭 없는 글자, BOM, 태그 문자), 줄과 문단
 # 나눔(Zl, Zp), 사용자 정의(Co), 정해지지 않은 글자(Cn), 짝 없는 서로게이트(Cs). target은 확인 창, 결과, 실행 기록에
 # 그대로 찍힌다. 이런 글자는 host 부분을 다르게 보이게 하거나, 사람은 못 보고 Claude만 읽는 글을 만든다
@@ -54,9 +48,6 @@ _INVISIBLE = frozenset(
 # HQ 창이 inventory.json을 바꿔치기하는 순간에 읽으면 WinError 5로 실패하고 곧 풀린다(스펙 3장). fileops와 같은 값
 _READ_ATTEMPTS = 5
 _READ_DELAY = 0.05
-# 문제 글자는 Claude에게 간다. InventoryError의 글에는 검사에 걸린 ID(username)나 서버 id가 들어 있을 수 있으므로
-# 그 글은 로그에만 남기고 이 글을 돌려준다
-_INVENTORY_UNREADABLE = "서버 목록 파일(inventory.json)을 읽을 수 없습니다. HQ 창을 열어 확인하세요."
 
 
 @dataclass(frozen=True)
@@ -218,11 +209,12 @@ def load_server_list(inventory_path: Path) -> ServerList:
             return ServerList(inventory.servers)
         except InventoryError as exc:
             if not isinstance(exc.__cause__, PermissionError):
-                _log.warning("서버 목록 파일을 읽을 수 없습니다: %s", exc)
+                # 자세한 이유(경로, 검사에 걸린 ID나 서버 id)는 사람에게만 간다. 로그는 부르는 쪽이 한 번 쓴다
+                problem = f"서버 목록 파일을 읽을 수 없습니다: {exc}"
                 if isinstance(exc.__cause__, OSError):
-                    return ServerList([], _INVENTORY_UNREADABLE, unreadable)
+                    return ServerList([], problem, unreadable)
                 malformed = f"서버 목록 파일({name})의 내용이 정해진 모양이 아닙니다. HQ 창을 열어 확인하세요."
-                return ServerList([], _INVENTORY_UNREADABLE, malformed)
+                return ServerList([], problem, malformed)
             attempts -= 1
             if attempts == 0:  # 잠긴 경우의 글에는 파일 경로만 있다
                 return ServerList([], str(exc), unreadable)

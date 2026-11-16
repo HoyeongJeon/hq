@@ -23,7 +23,7 @@ from hq.mcp.access import (
 )
 
 ID_A, ID_B, ID_C = "a" * 32, "b" * 32, "c" * 32
-UNREADABLE = "서버 목록 파일(inventory.json)을 읽을 수 없습니다. HQ 창을 열어 확인하세요."
+UNREADABLE_DETAIL = "서버 목록 파일을 읽을 수 없습니다"  # 사람에게 보이는 이유의 앞부분. 뒤에 자세한 이유가 붙는다
 
 
 def write(path, data, bom=False):
@@ -260,7 +260,7 @@ def test_load_servers_reads_again_while_hq_replaces_the_file(tmp_path, monkeypat
 
 @pytest.mark.parametrize(
     "cause, reads, problem",
-    [(PermissionError(5, "Access is denied"), 5, "잠김"), (ValueError("버전 2"), 1, UNREADABLE)],
+    [(PermissionError(5, "Access is denied"), 5, "잠김"), (ValueError("버전 2"), 1, f"{UNREADABLE_DETAIL}: 잠김")],
     ids=["locked", "broken"],
 )
 def test_load_servers_reads_again_only_while_the_file_is_locked(tmp_path, monkeypatch, cause, reads, problem):
@@ -282,15 +282,18 @@ def test_load_servers_reads_again_only_while_the_file_is_locked(tmp_path, monkey
     [(ID_A, "op$erator", "op$erator"), ("server-7f", "admin", "server-7f")],
     ids=["bad-username", "bad-id"],
 )
-def test_load_servers_keeps_usernames_and_server_ids_out_of_the_problem(tmp_path, caplog, server_id, username, leak):
-    # 문제 글자는 Claude에게 간다. InventoryError의 글에는 검사에 걸린 ID나 서버 id가 그대로 들어 있다
+def test_usernames_and_server_ids_stay_in_the_problem_for_people_and_out_of_the_summary(
+    tmp_path, caplog, server_id, username, leak
+):
+    # InventoryError의 글에는 검사에 걸린 ID나 서버 id가 그대로 들어 있다. 그 글은 사람(명령줄, 로그)에게만 가고,
+    # Claude에게 가는 summary에는 없다. access는 로그를 쓰지 않는다. 한 번만 쓰는 것은 부르는 쪽이다
     item = {"id": server_id, "name": "웹", "host": "10.0.1.21", "username": username}
     write(tmp_path / "inventory.json", {"version": 1, "settings": {"admin_ips": []}, "servers": [item]})
-    with caplog.at_level(logging.WARNING, logger="hq.mcp.access"):
-        servers, problem = load_servers(tmp_path / "inventory.json")
-    assert servers == [] and problem == UNREADABLE
-    assert username not in problem and server_id not in problem
-    assert leak in caplog.text  # 자세한 이유는 로그에만 남는다
+    with caplog.at_level(logging.DEBUG):
+        listed = load_server_list(tmp_path / "inventory.json")
+    assert listed.servers == [] and listed.problem.startswith(f"{UNREADABLE_DETAIL}: ") and leak in listed.problem
+    assert listed.summary == INVENTORY_MALFORMED and username not in listed.summary and server_id not in listed.summary
+    assert caplog.records == []
 
 
 def test_a_broken_settings_file_has_a_summary_with_only_the_file_name(tmp_path):

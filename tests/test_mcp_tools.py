@@ -5,6 +5,7 @@
 
 import dataclasses
 import json
+import logging
 import os
 import re
 import threading
@@ -279,6 +280,16 @@ def test_problems_reach_claude_by_file_name_and_a_fixed_cause_only(tmp_path, cap
     assert refused.is_error and fakes.execute.jobs == []
     if cause != "없어":  # 사람이 볼 전체 이유(경로 포함)는 로그에 남는다
         assert file in caplog.text and tmp_path.name in caplog.text
+
+
+def test_a_broken_server_list_is_logged_once_with_its_detail(tmp_path, caplog):
+    handlers, _ = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
+    (tmp_path / "inventory.json").write_text("{깨짐", encoding="utf-8")
+    with caplog.at_level(logging.DEBUG):
+        note = json.loads(call(handlers, "list_servers").text)["note"]
+    [record] = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert record.name == "hq.mcp.tools" and str(tmp_path) in record.getMessage()  # 사람이 볼 전체 이유는 로그로
+    assert str(tmp_path) not in note
 
 
 def test_a_missing_inventory_gives_an_empty_list_with_a_reason(tmp_path):
