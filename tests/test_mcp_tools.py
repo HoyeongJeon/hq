@@ -185,11 +185,20 @@ def test_list_servers_cleans_the_text_fields_and_tells_when_the_password_file_is
     assert (server["group"], server["memo"]) == ("운영[2J", "점검[2J 메모\n둘째 줄")
 
 
-def test_list_servers_cleans_the_name_when_the_nickname_forms_the_target(tmp_path):
+def test_a_server_whose_name_hides_a_character_behind_a_clean_nickname_is_not_offered(tmp_path):
     extra = {"nickname": "웹"}
-    handlers, _ = world(tmp_path, [("웹\x1b[2J01", "10.0.1.21", extra)], on=["10.0.1.21"])
+    handlers, fakes = world(tmp_path, [("웹\N{HANGUL FILLER}01", "10.0.1.21", extra)], on=["10.0.1.21"])
+    assert json.loads(call(handlers, "list_servers").text)["servers"] == []
+    assert call(handlers, "run_query", targets=["웹 (10.0.1.21)"], script="Get-Date").is_error
+    assert fakes.execute.jobs == []
+
+
+def test_list_servers_removes_what_the_name_rule_refuses_from_group_and_memo(tmp_path):
+    hidden = "\N{NO-BREAK SPACE}\N{HANGUL FILLER}\N{VARIATION SELECTOR-16}\N{BRAILLE PATTERN BLANK}\N{ZERO WIDTH SPACE}"
+    extra = {"group": f"운{hidden}영 1", "memo": f"첫 줄{hidden}\n\t둘째 줄\x1b[2J"}
+    handlers, _ = world(tmp_path, [("웹01", "10.0.1.21", extra)], on=["10.0.1.21"])
     [server] = json.loads(call(handlers, "list_servers").text)["servers"]
-    assert (server["target"], server["name"]) == ("웹 (10.0.1.21)", "웹[2J01")
+    assert (server["group"], server["memo"]) == ("운영 1", "첫 줄\n\t둘째 줄[2J")  # 메모만 줄바꿈과 탭을 남긴다
 
 
 def test_a_long_server_list_cuts_only_memos_and_says_how_many(tmp_path):

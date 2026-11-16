@@ -10,6 +10,7 @@ from hq.mcp.access import (
     Access,
     AccessError,
     canonical_ip,
+    hidden_name,
     load_access,
     load_server_list,
     load_servers,
@@ -18,9 +19,10 @@ from hq.mcp.access import (
     save_access,
     target_of,
     usable,
+    without_hidden,
 )
 
-ID_A, ID_B = "a" * 32, "b" * 32
+ID_A, ID_B, ID_C = "a" * 32, "b" * 32, "c" * 32
 UNREADABLE = "서버 목록 파일(inventory.json)을 읽을 수 없습니다. HQ 창을 열어 확인하세요."
 
 
@@ -130,42 +132,68 @@ def test_a_nickname_with_a_control_character_cannot_be_used():
     assert usable([old], Access(enabled=((ID_A, "10.0.1.21"),))) == []
 
 
+# MCP가 쓰지 않는 이름 글자. 소스에는 이름이나 chr로만 적는다(보이지 않는 글자를 그대로 두지 않는다)
 HIDDEN = {
-    "rlo": "\u202e",  # 글자 순서를 뒤집어 보이게 한다
-    "tag": "\U000e0041",
-    "zero-width-space": "\u200b",
-    "line-separator": "\u2028",
-    "paragraph-separator": "\u2029",
-    "bom": "\ufeff",
-    "private-use": "\ue000",
-    "unassigned": "\u0378",
-    "lone-surrogate": "\ud800",
+    "rlo": "\N{RIGHT-TO-LEFT OVERRIDE}",  # 글자 순서를 뒤집어 보이게 한다
+    "tag": "\N{TAG LATIN CAPITAL LETTER A}",
+    "zero-width-space": "\N{ZERO WIDTH SPACE}",
+    "line-separator": "\N{LINE SEPARATOR}",
+    "paragraph-separator": "\N{PARAGRAPH SEPARATOR}",
+    "bom": "\N{ZERO WIDTH NO-BREAK SPACE}",
+    "private-use": chr(0xE000),
+    "unassigned": chr(0x0378),
+    "lone-surrogate": chr(0xD800),
     "c1": "\x85",
+    # 범주로는 잡히지 않지만 보이지 않거나 빈칸처럼 보이는 글자
+    "variation-selector-16": "\N{VARIATION SELECTOR-16}",
+    "variation-selector-17": "\N{VARIATION SELECTOR-17}",
+    "grapheme-joiner": "\N{COMBINING GRAPHEME JOINER}",
+    "hangul-choseong-filler": "\N{HANGUL CHOSEONG FILLER}",
+    "hangul-jungseong-filler": "\N{HANGUL JUNGSEONG FILLER}",
+    "hangul-filler": "\N{HANGUL FILLER}",
+    "halfwidth-hangul-filler": "\N{HALFWIDTH HANGUL FILLER}",
+    "khmer-inherent-aq": "\N{KHMER VOWEL INHERENT AQ}",
+    "khmer-inherent-aa": "\N{KHMER VOWEL INHERENT AA}",
+    "mongolian-fvs1": "\N{MONGOLIAN FREE VARIATION SELECTOR ONE}",
+    "mongolian-vowel-separator": "\N{MONGOLIAN VOWEL SEPARATOR}",
+    "mongolian-fvs4": chr(0x180F),
+    "braille-blank": "\N{BRAILLE PATTERN BLANK}",
+    "no-break-space": "\N{NO-BREAK SPACE}",
+    "ideographic-space": "\N{IDEOGRAPHIC SPACE}",
+    "figure-space": "\N{FIGURE SPACE}",
+    "narrow-no-break-space": "\N{NARROW NO-BREAK SPACE}",
+    "ogham-space": "\N{OGHAM SPACE MARK}",
 }
 
 
 @pytest.mark.parametrize("hidden", HIDDEN.values(), ids=HIDDEN.keys())
-def test_a_target_name_with_an_invisible_or_direction_character_is_not_usable(hidden):
+def test_a_name_or_nickname_with_an_invisible_or_direction_character_is_not_usable(hidden):
     by_nickname = Server(ID_A, "웹", "10.0.1.21", "admin", nickname=f"웹{hidden}01")
     by_name = Server(ID_B, f"디비{hidden}02", "10.0.1.22", "admin")  # 별명이 없어 이름이 target이 된다
-    access = Access(enabled=((ID_A, "10.0.1.21"), (ID_B, "10.0.1.22")))
-    assert usable([by_nickname, by_name], access) == []
-    problems = name_problems([by_nickname, by_name])
-    assert len(problems) == 2 and all(hidden not in problem for problem in problems)
-    assert "1번째" in problems[0] and "10.0.1.21" in problems[0] and "2번째" in problems[1]
+    behind_a_nickname = Server(ID_C, f"앱{hidden}03", "10.0.1.23", "admin", nickname="앱")  # 별명이 깨끗해도 본다
+    servers = [by_nickname, by_name, behind_a_nickname]
+    access = Access(enabled=tuple((server.id, server.host) for server in servers))
+    assert usable(servers, access) == [] and all(hidden_name(server) for server in servers)
+    problems = name_problems(servers)
+    assert len(problems) == 3 and all(hidden not in problem for problem in problems)
+    assert "1번째" in problems[0] and "10.0.1.21" in problems[0] and "3번째" in problems[2]
 
 
-@pytest.mark.parametrize("name", ["웹서버 01", "Web-01_a (주)", "디비2", "app server (test)"])
+@pytest.mark.parametrize("name", ["웹서버 01", "Web-01_a (주)", "디비2", "app server (test)", "웹 \N{GRINNING FACE}"])
 def test_ordinary_names_stay_usable(name):
-    servers = [Server(ID_A, name, "10.0.1.21", "admin"), Server(ID_B, "웹", "10.0.1.22", "admin", nickname=name)]
-    access = Access(enabled=((ID_A, "10.0.1.21"), (ID_B, "10.0.1.22")))
+    servers = [
+        Server(ID_A, name, "10.0.1.21", "admin"),
+        Server(ID_B, "웹", "10.0.1.22", "admin", nickname=name),
+        Server(ID_C, name, "10.0.1.23", "admin", nickname=name),
+    ]
+    access = Access(enabled=tuple((server.id, server.host) for server in servers))
     assert usable(servers, access) == servers and name_problems(servers) == []
 
 
-def test_only_the_text_that_forms_the_target_is_judged():
-    # 별명이 있으면 이름은 target에 들지 않는다. list_servers는 그 이름을 clean_text로 거른 뒤 보낸다
-    server = Server(ID_A, "웹\u202e01", "10.0.1.21", "admin", nickname="웹")
-    assert usable([server], Access(enabled=((ID_A, "10.0.1.21"),))) == [server] and name_problems([server]) == []
+def test_without_hidden_removes_what_the_name_rule_refuses_and_keeps_what_is_asked():
+    text = "운 영" + "".join(HIDDEN.values()) + "\n\t메모 a-b_(c) \N{GRINNING FACE}"
+    assert without_hidden(text) == "운 영메모 a-b_(c) \N{GRINNING FACE}"
+    assert without_hidden(text, keep="\n\t") == "운 영\n\t메모 a-b_(c) \N{GRINNING FACE}"
 
 
 def test_resolve_returns_every_address_and_none_when_it_takes_too_long():

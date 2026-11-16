@@ -33,6 +33,24 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # 나눔(Zl, Zp), 사용자 정의(Co), 정해지지 않은 글자(Cn), 짝 없는 서로게이트(Cs). target은 확인 창, 결과, 실행 기록에
 # 그대로 찍힌다. 이런 글자는 host 부분을 다르게 보이게 하거나, 사람은 못 보고 Claude만 읽는 글을 만든다
 _HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cn", "Cs"})
+# 범주로는 잡히지 않지만 보이지 않거나 빈칸처럼 보이는 글자: 이체 선택자(U+FE00~FE0F, U+E0100~E01EF), 결합 자소
+# 연결자(U+034F), 한글 채움 문자(U+115F, U+1160, U+3164, U+FFA0), 크메르 내재 모음(U+17B4, U+17B5), 몽골 이체 선택자와
+# 모음 구분자(U+180B~180F), 점자 빈칸(U+2800). 보통 빈칸(U+0020)이 아닌 빈칸 글자(범주 Zs)도 _hidden_char가 본다
+_INVISIBLE = frozenset(
+    [
+        0x034F,
+        0x115F,
+        0x1160,
+        0x17B4,
+        0x17B5,
+        0x2800,
+        0x3164,
+        0xFFA0,
+        *range(0x180B, 0x1810),
+        *range(0xFE00, 0xFE10),
+        *range(0xE0100, 0xE01F0),
+    ]
+)
 # HQ 창이 inventory.json을 바꿔치기하는 순간에 읽으면 WinError 5로 실패하고 곧 풀린다(스펙 3장). fileops와 같은 값
 _READ_ATTEMPTS = 5
 _READ_DELAY = 0.05
@@ -218,13 +236,13 @@ def usable(servers: Sequence[Server], access: Access) -> list[Server]:
         server
         for server in servers
         if (server.id, server.host.lower()) in enabled
-        and not _hidden_in(server.display_name)  # _CONTROL의 글자(Cc)도 여기에 든다
+        and not hidden_name(server)
         and not _forbidden_ip(server.host, access.never)
     ]
 
 
 def name_problems(servers: Sequence[Server]) -> list[str]:
-    """target을 이루는 이름(별명, 별명이 없으면 이름)에 _HIDDEN_CATEGORIES의 글자가 든 서버마다 사람에게 보일 한 줄.
+    """이름이나 별명에 _hidden_in의 글자가 든 서버(hidden_name)마다 사람에게 보일 한 줄.
 
     usable은 이 서버들을 내놓지 않는다. 문제 글자는 옮겨 적지 않고 서버 목록의 순서와 host(영문, 숫자, 점, -만 든다)로
     가리킨다.
@@ -233,12 +251,30 @@ def name_problems(servers: Sequence[Server]) -> list[str]:
         f"서버 목록의 {number}번째 서버(host {server.host})는 이름에 보이지 않는 글자나 글자 순서를 바꾸는 글자가 있어 "
         "MCP에서 쓰지 않습니다. HQ에서 별명이나 이름을 고치세요."
         for number, server in enumerate(servers, 1)
-        if _hidden_in(server.display_name)
+        if hidden_name(server)
     ]
 
 
+def hidden_name(server: Server) -> bool:
+    """이름이나 별명에 _hidden_in의 글자가 있으면 참. usable은 이 서버를 쓰지 않는다.
+
+    별명이 깨끗해도 이름을 본다. 이름은 list_servers로 Claude에게 가고, 별명을 지우면 target이 된다.
+    """
+    return _hidden_in(server.name) or _hidden_in(server.nickname)
+
+
+def without_hidden(text: str, *, keep: str = "") -> str:
+    """_hidden_in이 보는 글자를 지운 글. keep의 글자(메모의 줄바꿈과 탭)는 남긴다."""
+    return "".join(char for char in text if char in keep or not _hidden_char(char))
+
+
 def _hidden_in(text: str) -> bool:
-    return any(unicodedata.category(char) in _HIDDEN_CATEGORIES for char in text)
+    return any(_hidden_char(char) for char in text)
+
+
+def _hidden_char(char: str) -> bool:
+    category = unicodedata.category(char)
+    return category in _HIDDEN_CATEGORIES or (category == "Zs" and char != " ") or ord(char) in _INVISIBLE
 
 
 def _forbidden_ip(host: str, never: Sequence[str]) -> bool:

@@ -166,6 +166,22 @@ def test_a_name_the_mcp_rule_refuses_is_not_enabled_and_list_says_why(tmp_path, 
     assert not any(char in text for text in texts)
 
 
+def test_the_command_line_uses_the_same_rule_for_a_name_behind_a_clean_nickname(tmp_path):
+    inventory(tmp_path, [("웹01", "10.0.1.21", "운영")])
+    edit_first_server(tmp_path, name="웹\N{HANGUL FILLER}01", nickname="웹")
+    code, text = run(tmp_path, "on", "10.0.1.21")
+    assert code == 2 and "보이지 않는 글자" in text and enabled_hosts(tmp_path) == []
+    code, text = run(tmp_path, "list")
+    assert code == 0 and line_with(text, "10.0.1.21").startswith("쓸 수 없음")
+
+
+def test_list_escapes_the_spaces_and_fillers_the_name_rule_refuses(tmp_path):
+    inventory(tmp_path, [("웹01", "10.0.1.21", "운영")])
+    edit_first_server(tmp_path, group="운\N{NO-BREAK SPACE}\N{HANGUL FILLER}영")
+    text = run(tmp_path, "list")[1]
+    assert "운\\xa0\\u3164영" in text and "\N{NO-BREAK SPACE}" not in text and "\N{HANGUL FILLER}" not in text
+
+
 def test_every_printed_line_escapes_what_the_terminal_would_act_on(tmp_path):
     inventory(tmp_path, [("웹01", "10.0.1.21", "운영")])
     edit_first_server(tmp_path, group=f"운{RLO}영")

@@ -18,6 +18,7 @@ from hq.mcp.access import (
     _forbidden_ip,
     _hidden_in,
     canonical_ip,
+    hidden_name,
     load_access,
     load_servers,
     save_access,
@@ -37,7 +38,7 @@ USAGE = """\
   python -m hq.mcp off <host>...        끄기
   python -m hq.mcp never <IP>...        금지 목록에 넣고 끄기. 풀려면 mcp-access.json을 직접 고친다"""
 UNCHANGED = "아무것도 바꾸지 않았습니다."
-# access.usable이 쓰지 않는 이름(target을 이루는 별명, 별명이 없으면 이름)
+# access.usable이 쓰지 않는 이름(access.hidden_name: 별명이나 이름)
 _HIDDEN_NAME = "이름에 제어 문자나 보이지 않는 글자, 글자 순서를 바꾸는 글자가 들어 있어"
 
 Result = tuple[int, list[str]]  # (종료 코드, 찍을 줄. 줄마다 줄바꿈이 없다)
@@ -52,9 +53,9 @@ def main(argv: Sequence[str], *, data: Path, out: TextIO) -> int:
 
 
 def shown(text: str) -> str:
-    """access._hidden_in이 보는 글자(제어, 서식, 줄 나눔, 사용자 정의, 정해지지 않은 글자)를 \\x1b, \\u202e,
-    \\U000e0041처럼 적는다. 그대로 찍으면 ESC 시퀀스가 터미널 화면을 지우거나, 방향 제어 문자가 글자 순서를 바꿔
-    보이게 한다."""
+    """access._hidden_in이 보는 글자(제어, 서식, 줄 나눔, 사용자 정의, 정해지지 않은 글자, 보통이 아닌 빈칸, 채움
+    글자)를 \\x1b, \\u202e, \\U000e0041처럼 적는다. 그대로 찍으면 ESC 시퀀스가 터미널 화면을 지우거나, 방향 제어
+    문자가 글자 순서를 바꿔 보이게 한다."""
     return "".join(_escaped(char) if _hidden_in(char) else char for char in text)
 
 
@@ -90,7 +91,7 @@ def _list(data: Path) -> Result:
         why = ""
         if _forbidden_ip(server.host, access.never):
             state = "금지"
-        elif _hidden_in(server.display_name):
+        elif hidden_name(server):
             state, why = "쓸 수 없음", f"  ({_HIDDEN_NAME} MCP에서 쓰지 않습니다. HQ에서 별명이나 이름을 고치세요.)"
         elif server.id in on:
             state = "켜짐"
@@ -192,7 +193,7 @@ def _why_not(server: Server, access: Access) -> str | None:
     """켤 수 없는 까닭. usable이 빼는 서버와 같다."""
     if _forbidden_ip(server.host, access.never):
         return "host가 금지 IP라"
-    if _hidden_in(server.display_name):
+    if hidden_name(server):
         return _HIDDEN_NAME
     return None
 

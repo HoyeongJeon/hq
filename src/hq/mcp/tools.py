@@ -24,12 +24,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hq.inventory import Server
-from hq.mcp.access import canonical_ip, load_access, load_server_list, target_of, usable
+from hq.mcp.access import canonical_ip, load_access, load_server_list, target_of, usable, without_hidden
 from hq.mcp.audit import AuditLog
 from hq.mcp.cli import ACCESS_FILE, INVENTORY_FILE
 from hq.mcp.protocol import INTERNAL_ERROR_TEXT, Handler, Tool, ToolResult
 from hq.mcp.querycheck import Verdict
-from hq.mcp.results import build_result, build_server_list, clean_text
+from hq.mcp.results import build_result, build_server_list
 from hq.mcp.runner import GRACE_SECONDS, RunOutcome, ServerJob
 from hq.mcp.schema import LIST_SERVERS, RUN_QUERY, RUN_SCRIPT, tool_shapes
 from hq.mcp.textcheck import never_ip_in
@@ -186,11 +186,12 @@ def _list_servers(deps: Deps) -> ToolResult:
     rows = [
         {
             "target": target_of(server),
-            "name": clean_text(server.name),
-            "nickname": clean_text(server.nickname),
+            # usable이 이름과 별명을 이미 걸렀다. 그룹과 메모는 같은 글자를 지운다(메모만 줄바꿈과 탭을 남긴다)
+            "name": without_hidden(server.name),
+            "nickname": without_hidden(server.nickname),
             "host": server.host,
-            "group": clean_text(server.group),
-            "memo": clean_text(server.memo),
+            "group": without_hidden(server.group),
+            "memo": without_hidden(server.memo, keep="\n\t"),
             "has_password": os.path.isfile(secrets.path_for(server.id)),
         }
         for server in servers
