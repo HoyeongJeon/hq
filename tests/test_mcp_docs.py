@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MCP_SPEC = ROOT / "docs/specs/2026-11-04-hq-mcp-design.md"
+BASE_SPEC = ROOT / "docs/specs/2026-10-15-hq-design.md"
 ACCEPT = ROOT / "docs/mcp-acceptance.md"
 HIDE = "계정 이름, 서버 주소와 이름, 컴퓨터 이름, 사용자 폴더 경로는 가린다"
 
@@ -19,9 +20,9 @@ def _manual_item(item_id: str) -> str:
     return text[start : end.start() if end else len(text)]
 
 
-def _spec_section(heading: str) -> str:
-    """MCP 스펙에서 heading으로 시작하는 절(다음 같은 깊이 이상의 제목 앞까지)."""
-    text = MCP_SPEC.read_text(encoding="utf-8")
+def _spec_section(heading: str, spec: Path = MCP_SPEC) -> str:
+    """스펙(기본은 MCP 스펙)에서 heading으로 시작하는 절(다음 같은 깊이 이상의 제목 앞까지)."""
+    text = spec.read_text(encoding="utf-8")
     level = heading.split(" ", 1)[0]
     body = text.split(f"\n{heading}", 1)[1]
     return re.split(rf"\n#{{1,{len(level)}}} ", body, maxsplit=1)[0]
@@ -69,17 +70,44 @@ def test_the_readme_puts_the_mcp_section_before_security_and_scopes_the_log_sent
 
 
 def test_the_base_spec_points_to_the_mcp_spec_in_three_places():
-    text = (ROOT / "docs/specs/2026-10-15-hq-design.md").read_text(encoding="utf-8")
+    text = BASE_SPEC.read_text(encoding="utf-8")
     assert text.count("2026-11-04-hq-mcp-design.md") >= 3
+    for heading in ("### 8.1 ", "### 8.3 ", "## 15. "):
+        assert "(2026-11-04-hq-mcp-design.md)" in _spec_section(heading, BASE_SPEC), heading
+
+
+def _addresses(text: str) -> list[str]:
+    """글에서 IPv4 주소처럼 보이는 글자들. 문장 끝의 점은 주소의 일부가 아니다.
+
+    건너뛰는 글자는 PowerShell CLIXML의 버전 표시 Version="1.1.0.1" 하나뿐이다(test_mcp_psrun.py).
+    """
+    text = text.replace('Version="1.1.0.1"', "")
+    return re.findall(r"(?<!\d)(?<!\d\.)\d{1,3}(?:\.\d{1,3}){3}(?!\d|\.\d)", text)
+
+
+def test_the_address_scan_finds_an_address_at_the_end_of_a_sentence_and_skips_only_the_clixml_version():
+    assert _addresses("금지할 주소는 203.0.113.7.") == ["203.0.113.7"]
+    assert _addresses("(203.0.113.7), 203.0.113.8: x.203.0.113.9") == ["203.0.113.7", "203.0.113.8", "203.0.113.9"]
+    assert _addresses('Version="203.0.113.7"') == ["203.0.113.7"]
+    # PowerShell CLIXML의 <Objs Version="1.1.0.1">(test_mcp_psrun.py). 주소가 아니다
+    assert _addresses('<Objs Version="1.1.0.1" xmlns="x">') == []
+    # 더 긴 점 숫자(버전 번호 등)의 일부는 주소로 보지 않는다
+    assert _addresses("1.2.3.4.5 10.0.1.210 5.10.0.1.21") == ["10.0.1.210"]
 
 
 def test_public_files_hold_only_documentation_addresses():
-    # 110.0.1.21은 Task 6의 경계 시험 값
-    allowed = re.compile(r"^(10\.0\.1\.\d+|192\.0\.2\.\d+|198\.51\.100\.\d+|127\.0\.0\.1|110\.0\.1\.21)$")
+    # 110.0.1.21은 Task 6의 경계 시험 값. 203.0.113.0/24는 192.0.2.0/24, 198.51.100.0/24와 함께 RFC 5737의 문서용
+    # 범위다(위의 주소 찾기 시험이 쓴다)
+    allowed = re.compile(
+        r"^(10\.0\.1\.\d+|192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113\.\d+|127\.0\.0\.1|110\.0\.1\.21)$"
+    )
     files = [
         MCP_SPEC,
         ACCEPT,
         ROOT / "README.md",
+        BASE_SPEC,
+        ROOT / "docs/acceptance.md",
+        ROOT / "docs/verification.md",
         ROOT / "docs/plans/2026-11-10-hq-mcp.md",
         *(ROOT / "src/hq/mcp").rglob("*"),
         *(ROOT / "src/hq/ps").glob("mcp-*.ps1"),
@@ -88,9 +116,7 @@ def test_public_files_hold_only_documentation_addresses():
         *ROOT.glob("tests/integration/*mcp*.py"),
     ]
     for path in (f for f in files if f.suffix in {".py", ".json", ".ps1", ".md"}):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        # <Objs Version="1.1.0.1">는 PowerShell CLIXML의 버전 번호다(test_mcp_psrun.py). 주소가 아니다
-        for ip in re.findall(r'(?<![\d.])(?<!Version=")\d{1,3}(?:\.\d{1,3}){3}(?![\d.])', text):
+        for ip in _addresses(path.read_text(encoding="utf-8", errors="replace")):
             assert allowed.match(ip), (path.name, ip)
 
 
