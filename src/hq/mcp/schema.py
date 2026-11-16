@@ -30,7 +30,7 @@ def tool_shapes() -> dict[str, dict]:
 
 def _run_input(*, with_reason: bool) -> dict:
     properties = {
-        "targets": {"type": "array", "items": {"type": "string"}, "minItems": 1, "uniqueItems": True},
+        "targets": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200, "uniqueItems": True},
         "script": {"type": "string", "minLength": 1, "maxLength": 20000},
     }
     required = ["targets", "script"]

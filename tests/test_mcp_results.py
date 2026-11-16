@@ -176,6 +176,16 @@ def test_a_server_list_fits_the_budget_by_cutting_only_memos(budget):
     assert cut > 0 and f"메모 {cut}개" in reply["note"]
 
 
+def test_a_memo_is_cut_rather_than_dropped_when_the_reply_without_memos_fits():
+    rows = [{**row, "memo": ""} for row in server_rows(40, 0)]
+    budget = weighted_size(build_server_list(rows)) + 300  # memo 없는 응답에 300만 더 들어간다
+    rows[7] = {**rows[7], "memo": "가" * 300}  # 1,200이라 통째로는 들지 않는다
+    text = build_server_list(rows, budget=budget)
+    sent = json.loads(text)["servers"][7]["memo"]
+    assert weighted_size(text) <= budget
+    assert sent.endswith(MEMO_CUT) and sent.startswith("가")
+
+
 def test_a_server_list_that_fits_is_unchanged_and_has_no_note():
     rows = server_rows(3, 2)
     assert json.loads(build_server_list(rows)) == {"servers": rows}

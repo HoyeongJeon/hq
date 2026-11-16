@@ -58,6 +58,7 @@ SAFETY = "\n".join(
 )
 
 REASON_MAX = 200
+TARGETS_MAX = 200  # 호출 하나가 받는 대상의 수. schema의 maxItems와 같다(테스트가 지킨다)
 # 남은 시간이 이 초 이하면 서버를 시작하지 않는다. 그보다 길면 정리 시간(GRACE_SECONDS)을 빼고도 5초 넘게 남는다
 _START_MARGIN = 15
 _POLL_SECONDS = 0.2  # 자리를 기다리거나 서버 스레드를 기다리는 동안 취소 신호와 호출 한도를 보는 간격
@@ -76,7 +77,9 @@ _NO_ACCESS_FILE = (
 )
 _NOT_RECORDED = "실행 기록을 쓰지 못해 실행하지 않았습니다."
 _REASONS_SHOWN = 10  # 조회 검사 거절에 적는 이유의 수
+_REASON_CHARS = 200  # 그 이유 하나의 길이. 넘으면 잘라 …로 끝낸다
 _CANCELLED = "실행을 시작하기 전에 호출이 취소되어 어느 서버에도 접속하지 않았습니다."
+_NO_RESOLVER = "이름을 풀 스레드를 띄우지 못해 어느 서버에도 접속하지 않았습니다. 잠시 뒤 다시 부르세요."
 
 _LIST_SERVERS = (
     "HQ의 서버 목록입니다. 사용을 켠 서버만 보입니다. `targets`에는 여기서 받은 `target` 글자를 그대로 쓰세요."
@@ -247,8 +250,8 @@ def _run(deps: Deps, tool: str, arguments: dict, cancel: threading.Event) -> Too
     if why is not None:
         return _rejected(deps, tool, request.script, why)
     addresses = _resolve_all(deps, [server.host for server in chosen], cancel)  # IP host도 거친다(풀지는 않는다)
-    if addresses is None:  # 시작 기록 전의 취소: 아무것도 하지 않고 거절로 남긴다
-        return _rejected(deps, tool, request.script, _CANCELLED)
+    if isinstance(addresses, str):  # 시작 기록 전의 취소나 풀이 스레드 실패: 아무것도 하지 않고 거절로 남긴다
+        return _rejected(deps, tool, request.script, addresses)
     why = _forbidden(request.targets, addresses, never)
     if why is not None:
         return _rejected(deps, tool, request.script, why)
@@ -261,7 +264,7 @@ def _run(deps: Deps, tool: str, arguments: dict, cancel: threading.Event) -> Too
         return _refused(_NOT_RECORDED)
     run = _Run(deps, request, chosen, started, deps.data / "mcp-run" / call_id)
     try:
-        run.start_all(run.preflight(addresses), cancel)
+        run.start_all(run.preflight(addresses, cancel), cancel)
     finally:
         outcomes = run.results()
         try:
@@ -280,6 +283,8 @@ def _read_arguments(tool: str, arguments: dict) -> _Request | str:
     targets = arguments.get("targets")
     if not isinstance(targets, list) or not targets or not all(isinstance(t, str) for t in targets):
         return "targets는 list_servers가 준 target 글자를 하나 이상 담은 목록이어야 합니다."
+    if len(targets) > TARGETS_MAX:
+        return f"targets는 한 번에 {TARGETS_MAX}개까지 받습니다."
     if len(set(targets)) != len(targets):
         return "targets에 같은 대상이 두 번 있습니다."
     script = arguments.get("script")
@@ -335,7 +340,9 @@ def _screen(deps: Deps, tool: str, script: str, never: Sequence[str]) -> str | N
     verdict = deps.check(script)
     if verdict.ok:
         return None
-    lines = ["조회 검사에 걸려 어느 서버에도 접속하지 않았습니다.", *verdict.reasons[:_REASONS_SHOWN]]
+    # 이유에는 스크립트의 글자가 들 수 있다. 이름 규칙의 글자를 지운 뒤 하나씩 자른다
+    shown = [_clipped(without_hidden(reason)) for reason in verdict.reasons[:_REASONS_SHOWN]]
+    lines = ["조회 검사에 걸려 어느 서버에도 접속하지 않았습니다.", *shown]
     if len(verdict.reasons) > _REASONS_SHOWN:  # 거절 글은 짧게 둔다. Claude Code는 긴 isError 글의 가운데를 버린다
         lines.append(f"외 {len(verdict.reasons) - _REASONS_SHOWN}건")
     if any(reason.startswith("PARSER_HAZARD") for reason in verdict.reasons):
@@ -346,11 +353,16 @@ def _screen(deps: Deps, tool: str, script: str, never: Sequence[str]) -> str | N
     return "\n".join(lines)
 
 
-def _resolve_all(deps: Deps, hosts: Sequence[str], cancel: threading.Event) -> list[list[str] | None] | None:
-    """hosts를 함께 풀어 hosts 순서의 주소 목록을 돌려준다. 기다리는 사이에 취소되면 None.
+def _clipped(text: str) -> str:
+    return text if len(text) <= _REASON_CHARS else text[: _REASON_CHARS - 1] + "…"
 
-    host마다 데몬 스레드 하나로 푼다. _RESOLVE_WAIT_SECONDS 안에 끝나지 않았거나 예외로 끝난 풀이는 풀지 못한
-    것(None)이다. 결과는 기다림을 마친 순간의 사본이라, 늦게 끝난 풀이가 금지 주소 비교 뒤에 끼어들지 않는다.
+
+def _resolve_all(deps: Deps, hosts: Sequence[str], cancel: threading.Event) -> list[list[str] | None] | str:
+    """hosts를 함께 풀어 hosts 순서의 주소 목록을 돌려준다. 취소되었거나 풀이 스레드를 띄우지 못했으면 거절 이유.
+
+    host마다 데몬 스레드 하나로 푼다. 스레드를 띄우다 실패하면 이미 띄운 풀이는 혼자 끝나게 둔다.
+    _RESOLVE_WAIT_SECONDS 안에 끝나지 않았거나 예외로 끝난 풀이는 풀지 못한 것(None)이다. 결과는 기다림을 마친 순간의
+    사본이라, 늦게 끝난 풀이가 금지 주소 비교 뒤에 끼어들지 않는다.
     """
     lock = threading.Lock()
     found: dict[str, list[str] | None] = {}
@@ -368,14 +380,18 @@ def _resolve_all(deps: Deps, hosts: Sequence[str], cancel: threading.Event) -> l
         threading.Thread(target=lookup, args=(host,), name="hq-mcp-resolve", daemon=True)
         for host in dict.fromkeys(hosts)
     ]
-    for thread in threads:
-        thread.start()
+    try:
+        for thread in threads:
+            thread.start()
+    except Exception:  # 예외 글자는 Claude에게 보내지 않는다
+        _log.exception("이름을 풀 스레드를 띄우지 못했습니다.")
+        return _NO_RESOLVER
     deadline = time.monotonic() + _RESOLVE_WAIT_SECONDS
     for thread in threads:
         while thread.is_alive() and not cancel.is_set() and (left := deadline - time.monotonic()) > 0:
             thread.join(min(_POLL_SECONDS, left))
     if cancel.is_set():
-        return None
+        return _CANCELLED
     with lock:
         settled = dict(found)
     return [settled.get(host) for host in hosts]
@@ -419,8 +435,12 @@ class _Run:
         self._running: dict[int, Path] = {}  # 자리를 얻은 서버의 번호 → 취소 파일
         self._told: set[int] = set()  # 취소 파일을 만든 서버의 번호
 
-    def preflight(self, addresses: Sequence[list[str] | None]) -> list[int]:
-        """풀지 못한 이름, 비밀번호 파일, TrustedHosts, 5985 포트를 보고 실행할 서버의 번호를 돌려준다."""
+    def preflight(self, addresses: Sequence[list[str] | None], cancel: threading.Event) -> list[int]:
+        """풀지 못한 이름, 비밀번호 파일, TrustedHosts, 5985 포트를 보고 실행할 서버의 번호를 돌려준다.
+
+        TrustedHosts를 읽기 전과 포트를 보기 전에 취소를 본다. 취소되었으면 남은 서버는 NOT_STARTED이고 아무것도
+        실행하지 않는다. 이미 정해진 서버(UNRESOLVED 등)의 결과는 그대로 둔다.
+        """
         pending = []
         for number, (server, found) in enumerate(zip(self._servers, addresses, strict=True)):
             if found is None:
@@ -429,6 +449,8 @@ class _Run:
                 self._outcomes[number] = _status(server, "SECRET_UNREADABLE")
             else:
                 pending.append(number)
+        if cancel.is_set():
+            return self._not_started(pending)
         self._trusted = self._deps.read_trusted()  # 읽지 못했으면 None이고, 그때는 보지 않는다
         if self._trusted is not None:
             for number in pending:
@@ -436,11 +458,18 @@ class _Run:
                     self._outcomes[number] = _status(self._servers[number], "NOT_TRUSTED")
             pending = [number for number in pending if self._outcomes[number] is None]
         if pending:
+            if cancel.is_set():
+                return self._not_started(pending)
             open_ports = self._deps.probe([self._servers[number].host for number in pending])
             for number in pending:
                 if not open_ports.get(self._servers[number].host):
                     self._outcomes[number] = _status(self._servers[number], "UNREACHABLE")
         return [number for number in pending if self._outcomes[number] is None]
+
+    def _not_started(self, numbers: list[int]) -> list[int]:
+        for number in numbers:
+            self._outcomes[number] = _status(self._servers[number], "NOT_STARTED")
+        return []
 
     def start_all(self, numbers: list[int], cancel: threading.Event) -> None:
         """서버마다 스레드를 띄우고 모두 끝날 때까지 기다린다.

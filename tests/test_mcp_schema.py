@@ -24,6 +24,7 @@ def test_input_limits_match_the_spec():
         "type": "array",
         "items": {"type": "string"},
         "minItems": 1,
+        "maxItems": 200,  # tools.TARGETS_MAX와 같다
         "uniqueItems": True,
     }
     assert query["properties"]["script"] == {"type": "string", "minLength": 1, "maxLength": 20000}

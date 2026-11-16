@@ -19,6 +19,7 @@ from hq.mcp.psrun import PsResult
 from hq.mcp.querycheck import Verdict, check_query, load_rules
 from hq.mcp.results import MEMO_CUT, RESULT_BUDGET, weighted_size
 from hq.mcp.runner import RunOutcome, run_on_server
+from hq.mcp.schema import tool_shapes
 from hq.mcp.tools import DESCRIPTION_MAX, SAFETY, Deps, build_handlers, build_tools, descriptions
 
 WEB, DB, APP = "웹01 (10.0.1.21)", "디비 (db01.example)", "앱 (10.0.1.23)"
@@ -863,6 +864,86 @@ def test_a_check_refusal_lists_at_most_ten_reasons(tmp_path):
     text = call(handlers, "run_query", targets=[WEB], script="Get-Date").text
     assert "명령10 " in text and "명령11 " not in text and "외 15건" in text and "run_script" in text
     assert fakes.audit_lines()[-1]["why"] == text
+
+
+def test_each_listed_reason_is_cleaned_and_cut_to_200_characters(tmp_path):
+    rlo = "\N{RIGHT-TO-LEFT OVERRIDE}"
+    reasons = ("COMMAND: " + "가" * 150 + rlo + "나" * 150 + " (줄 1)", "PATH: \x1b[2J짧은 이유 (줄 2)")
+    handlers, _ = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"], verdict=Verdict(False, reasons))
+    lines = call(handlers, "run_query", targets=[WEB], script="Get-Date").text.splitlines()
+    [long] = [line for line in lines if line.startswith("COMMAND")]
+    assert len(long) == 200 and long.endswith("…") and long.startswith("COMMAND: " + "가" * 150 + "나")
+    assert "PATH: [2J짧은 이유 (줄 2)" in lines and not any(rlo in line or "\x1b" in line for line in lines)
+
+
+def test_a_resolve_thread_that_cannot_start_refuses_the_call(tmp_path, monkeypatch):
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
+    real_start = threading.Thread.start
+
+    def start(thread):
+        if thread.name == "hq-mcp-resolve":
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    result = call(handlers, "run_query", targets=[WEB], script="Get-Date")
+    assert result.is_error and "이름" in result.text and "RuntimeError" not in result.text
+    assert "can't start" not in result.text and fakes.audit_lines()[-1]["event"] == "rejected"
+    assert fakes.execute.jobs == [] and fakes.probe.calls == [] and fakes.trusted_reads == []
+
+
+def test_at_most_200_targets_are_taken(tmp_path):
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
+    targets = [WEB] + [f"서버{n} (192.0.2.{n})" for n in range(200)]
+    result = call(handlers, "run_query", targets=targets, script="Get-Date")
+    assert result.is_error and "200" in result.text
+    assert fakes.check.calls == [] and fakes.resolve.calls == [] and fakes.execute.jobs == []
+    assert tools.TARGETS_MAX == 200
+    assert tool_shapes()["run_query"]["input_schema"]["properties"]["targets"]["maxItems"] == tools.TARGETS_MAX
+    assert tool_shapes()["run_script"]["input_schema"]["properties"]["targets"]["maxItems"] == tools.TARGETS_MAX
+
+
+class CancelOnStart(AuditLog):
+    """시작 줄을 쓴 직후에 호출이 취소된다."""
+
+    def __init__(self, directory, cancel):
+        super().__init__(directory)
+        self._cancel = cancel
+
+    def start(self, *args, **kwargs):
+        super().start(*args, **kwargs)
+        self._cancel.set()
+
+
+def test_a_call_cancelled_before_the_trusted_hosts_read_runs_nothing(tmp_path):
+    cancel = threading.Event()
+    servers = [("웹01", "10.0.1.21"), ("디비", "db01.example")]
+    handlers, fakes = world(
+        tmp_path,
+        servers,
+        on=["10.0.1.21", "db01.example"],
+        resolved={"db01.example": None},
+        audit=CancelOnStart(tmp_path / "logs", cancel),
+    )
+    rows = rows_of(handlers["run_query"]({"targets": [WEB, DB], "script": "Get-Date"}, cancel))
+    assert [r["status"] for r in rows] == ["NOT_STARTED", "UNRESOLVED"]
+    assert fakes.trusted_reads == [] and fakes.probe.calls == [] and fakes.execute.jobs == []
+    start, end = fakes.audit_lines()
+    assert (start["event"], [r["status"] for r in end["results"]]) == ("start", ["NOT_STARTED", "UNRESOLVED"])
+
+
+def test_a_call_cancelled_before_the_probe_runs_nothing(tmp_path):
+    cancel = threading.Event()
+
+    def read_trusted_then_cancel():
+        cancel.set()
+        return None
+
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"], read_trusted=read_trusted_then_cancel)
+    rows = rows_of(handlers["run_query"]({"targets": [WEB], "script": "Get-Date"}, cancel))
+    assert [r["status"] for r in rows] == ["NOT_STARTED"]
+    assert fakes.probe.calls == [] and fakes.execute.jobs == []
+    assert [r["status"] for r in fakes.audit_lines()[-1]["results"]] == ["NOT_STARTED"]
 
 
 def test_the_safety_text_is_the_one_the_design_sets():

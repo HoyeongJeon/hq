@@ -52,23 +52,27 @@ def build_server_list(rows: Sequence[dict], *, budget: int = RESULT_BUDGET) -> s
     """list_servers의 JSON 글자 {"servers": rows}. 크기는 build_result와 같은 셈법으로 budget 안에 둔다.
 
     넘으면 memo만 줄인다. 서버마다 몫을 공평하게 나눠(_shares) 앞에서부터 남기고 끝에 MEMO_CUT을 붙이며, 몇 개를
-    줄였는지 note가 알린다. 다른 칸은 자르지 않는다. 틀(모든 memo 자리에 MEMO_CUT, 가장 긴 note)만으로 넘으면 memo를
-    모두 빼고 note가 그렇게 알린다. 그때만 결과가 budget을 넘을 수 있다.
+    줄였는지 note가 알린다. MEMO_CUT도 그 memo의 몫 안에 든다. 몫이 MEMO_CUT보다 작은 memo는 비운다. 다른 칸은
+    자르지 않는다. memo를 모두 비운 응답(가장 긴 note를 단)이 이미 넘을 때만 memo를 모두 빼고 note가 그렇게 알린다.
+    그때만 결과가 budget을 넘을 수 있다.
     """
     whole = _server_list(rows)
     if weighted_size(whole) <= budget:
         return whole
     memos = [row["memo"] for row in rows]
-    frame = _server_list([{**row, "memo": MEMO_CUT} for row in rows], _memos_cut(len(rows)))
-    room = budget - weighted_size(frame)
+    blank = [{**row, "memo": ""} for row in rows]
+    room = budget - weighted_size(_server_list(blank, _memos_cut(len(rows))))
     if room < 0:
         dropped = f"응답 크기 한도 때문에 메모 {sum(1 for memo in memos if memo)}개를 모두 뺐습니다."
-        return _server_list([{**row, "memo": ""} for row in rows], dropped)
+        return _server_list(blank, dropped)
+    marker = _json_size(MEMO_CUT)
     needs = [_json_size(memo) for memo in memos]
     kept = []
     for row, memo, need, share in zip(rows, memos, needs, _shares(needs, room), strict=True):
-        # 틀이 서버마다 MEMO_CUT 자리를 이미 셌으므로, 자른 memo도 몫에 MEMO_CUT을 더한 만큼만 쓴다
-        kept.append(row if need <= share else {**row, "memo": _fit(memo, share) + MEMO_CUT})
+        if need <= share:
+            kept.append(row)
+        else:
+            kept.append({**row, "memo": _fit(memo, share - marker) + MEMO_CUT if share > marker else ""})
     cut = sum(1 for old, new in zip(rows, kept, strict=True) if new is not old)
     return _server_list(kept, _memos_cut(cut))
 
@@ -81,7 +85,10 @@ def _server_list(rows: Sequence[dict], note: str | None = None) -> str:
 
 
 def _memos_cut(count: int) -> str:
-    return f"응답 크기 한도 때문에 메모 {count}개는 앞부분만 보냈습니다. 그 메모는 {MEMO_CUT}로 끝납니다."
+    return (
+        f"응답 크기 한도 때문에 메모 {count}개를 줄였습니다. "
+        f"줄인 메모는 {MEMO_CUT}로 끝나고, 자리가 모자라면 비어 있습니다."
+    )
 
 
 def _dumps(rows: list[dict]) -> str:
