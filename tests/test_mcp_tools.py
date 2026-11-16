@@ -357,6 +357,78 @@ def test_run_script_needs_a_one_line_reason(tmp_path, reason):
     assert call(handlers, "run_script", **args).is_error and fakes.execute.jobs == []
 
 
+RUN_TOOLS = pytest.mark.parametrize("tool", ["run_query", "run_script"])
+
+
+def run_args(tool, **args):
+    return args | ({"reason": "점검"} if tool == "run_script" else {})
+
+
+@RUN_TOOLS
+@pytest.mark.parametrize(
+    "script, code, made",
+    [
+        pytest.param("Get-Date\rRemove-Item x", "U+000D", "[char]0xD", id="lone-cr"),
+        pytest.param("Get-Date\r", "U+000D", "[char]0xD", id="cr-at-the-end"),
+        pytest.param("Get-Date\r\r\nGet-Process", "U+000D", "[char]0xD", id="cr-before-crlf"),
+        pytest.param("Write-Output 'a\x1b[2Jb'", "U+001B", "[char]0x1B", id="esc"),
+        pytest.param("Write-Output 'abc\N{RIGHT-TO-LEFT OVERRIDE}fed'", "U+202E", "[char]0x202E", id="rlo"),
+        pytest.param("Get-\N{ZERO WIDTH SPACE}Date", "U+200B", "[char]0x200B", id="zwsp"),
+        pytest.param("\N{ZERO WIDTH NO-BREAK SPACE}Get-Date", "U+FEFF", "[char]0xFEFF", id="bom"),
+        pytest.param("Get-Date # \U000e0041", "U+E0041", "[char]::ConvertFromUtf32(0xE0041)", id="tag"),
+        pytest.param("Get-Date\N{LINE SEPARATOR}Remove-Item x", "U+2028", "[char]0x2028", id="line-separator"),
+        pytest.param("Write-Output '\N{HANGUL FILLER}'", "U+3164", "[char]0x3164", id="hangul-filler"),
+    ],
+)
+def test_a_script_with_a_character_that_can_disguise_it_is_refused(tmp_path, tool, script, code, made):
+    # 확인 창(run_script의 유일한 장치)에 실제로 돌 것과 다른 글을 보이게 할 수 있는 글자. 인자 오류라 기록되지 않는다
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
+    result = call(handlers, tool, **run_args(tool, targets=[WEB], script=script))
+    assert result.is_error and code in result.text and made in result.text, result.text
+    assert result.text.isprintable()  # 받은 글자를 그대로 옮겨 적지 않는다
+    assert fakes.execute.jobs == [] and fakes.check.calls == [] and fakes.resolve.calls == []
+    assert fakes.audit_lines() == []
+
+
+@RUN_TOOLS
+@pytest.mark.parametrize(
+    "script",
+    [
+        pytest.param("Get-Date\r\nGet-Process\r\n", id="crlf"),
+        pytest.param("Get-Process |\n\tSelect-Object Name", id="lf-and-tab"),
+        pytest.param("Write-Host '메모리 조회'", id="hangul"),
+        pytest.param("Write-Output 'a\N{NO-BREAK SPACE}b\N{IDEOGRAPHIC SPACE}c'", id="spaces-in-a-string"),
+        pytest.param("Get-Date\r\n" * 2000, id="20000-characters"),
+    ],
+)
+def test_an_ordinary_script_passes_the_character_rule(tmp_path, tool, script):
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
+    result = call(handlers, tool, **run_args(tool, targets=[WEB], script=script))
+    assert not result.is_error, result.text
+    assert [job.script for job in fakes.execute.jobs] == [script] and len(script) <= tools.SCRIPT_MAX
+
+
+@pytest.mark.parametrize(
+    "reason, code",
+    [
+        ("점검\t이유", "U+0009"),
+        ("점검\r", "U+000D"),
+        ("점검\x1b[2J", "U+001B"),
+        ("점검\N{NO-BREAK SPACE}이유", "U+00A0"),
+        ("점검\N{IDEOGRAPHIC SPACE}이유", "U+3000"),
+        ("점검 \N{RIGHT-TO-LEFT OVERRIDE}유이", "U+202E"),
+        ("\N{ZERO WIDTH SPACE}점검", "U+200B"),
+    ],
+)
+def test_a_reason_with_a_character_that_can_disguise_it_is_refused(tmp_path, reason, code):
+    # reason은 확인 창에 한 줄로 보인다. 이름 규칙과 같고 탭, 줄바꿈, U+0020이 아닌 빈칸도 받지 않는다
+    handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
+    result = call(handlers, "run_script", targets=[WEB], script="Get-Date", reason=reason)
+    assert result.is_error and code in result.text and result.text.isprintable(), result.text
+    assert fakes.execute.jobs == [] and fakes.audit_lines() == []
+    assert not call(handlers, "run_script", targets=[WEB], script="Get-Date", reason="디스크 정리 (C:) 확인").is_error
+
+
 def test_the_edge_values_are_accepted(tmp_path):
     handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
     script = "# <# 줄 주석 안의 <#는 블록 주석을 열지 않는다\nGet-Date"
@@ -976,7 +1048,7 @@ def test_the_run_descriptions_say_what_ok_means_and_which_output_comes_back():
     assert "list_servers" in texts["run_query"] and "target" in texts["list_servers"]
     assert "reason" in texts["run_script"] and "사용자가 확인" in texts["run_script"]
     for name in ("run_query", "run_script"):
-        for word in ("OK", "errors", "Out-Host", "$Host.UI", "output_chars"):
+        for word in ("OK", "errors", "Out-Host", "$Host.UI", "output_chars", "[char]0x1B"):
             assert word in texts[name], (name, word)
 
 

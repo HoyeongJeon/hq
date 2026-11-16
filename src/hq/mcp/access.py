@@ -260,13 +260,24 @@ def without_hidden(text: str, *, keep: str = "") -> str:
     return "".join(char for char in text if char in keep or not _hidden_char(char))
 
 
+def first_hidden(text: str, *, keep: str = "", spaces: bool = False) -> str | None:
+    """text에서 처음 나오는 _hidden_in의 글자. 없으면 None.
+
+    keep의 글자는 보지 않고, spaces가 참이면 빈칸 글자(범주 Zs)도 보지 않는다. tools가 run_query와 run_script의
+    script와 reason을 이 규칙으로 거절한다(스펙 4.4, 4.5).
+    """
+    return next((char for char in text if char not in keep and _hidden_char(char, spaces=spaces)), None)
+
+
 def _hidden_in(text: str) -> bool:
     return any(_hidden_char(char) for char in text)
 
 
-def _hidden_char(char: str) -> bool:
+def _hidden_char(char: str, *, spaces: bool = False) -> bool:
     category = unicodedata.category(char)
-    return category in _HIDDEN_CATEGORIES or (category == "Zs" and char != " ") or ord(char) in _INVISIBLE
+    if category == "Zs":
+        return not spaces and char != " "
+    return category in _HIDDEN_CATEGORIES or ord(char) in _INVISIBLE
 
 
 def _forbidden_ip(host: str, never: Sequence[str]) -> bool:

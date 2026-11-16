@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hq.inventory import Server
-from hq.mcp.access import canonical_ip, load_access, load_server_list, target_of, usable, without_hidden
+from hq.mcp.access import canonical_ip, first_hidden, load_access, load_server_list, target_of, usable, without_hidden
 from hq.mcp.audit import AuditLog
 from hq.mcp.cli import ACCESS_FILE, INVENTORY_FILE
 from hq.mcp.protocol import INTERNAL_ERROR_TEXT, Handler, Tool, ToolResult
@@ -68,8 +68,6 @@ _ARGUMENTS = {
     RUN_QUERY: {"targets", "script", "timeout_seconds"},
     RUN_SCRIPT: {"targets", "script", "timeout_seconds", "reason"},
 }
-# str.splitlines가 줄을 나누는 글자. reason은 확인 창과 실행 기록에 한 줄로 남는다
-_LINE_BREAK = re.compile("[\n\r\x0b\x0c\x1c-\x1e\x85\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}]")
 _LINE_END = re.compile("[\r\n]")  # PowerShell의 줄 주석이 끝나는 글자
 _NO_ACCESS_FILE = (
     "사용 설정 파일(mcp-access.json)이 없어 모든 서버가 꺼져 있습니다. "
@@ -101,7 +99,12 @@ _RUN_QUERY_TAIL = [
 ]
 _RUN_SCRIPT = (
     "서버에서 아무 스크립트나 실행합니다. 조회 검사는 거치지 않습니다. 호출마다 사용자가 확인합니다. "
-    "`reason`에는 무엇을 왜 하는지 한 줄로 쓰세요."
+    "`reason`에는 무엇을 왜 하는지 보이는 글자와 보통 빈칸으로 한 줄로 쓰세요."
+)
+# 확인 창에서 실제와 다르게 보일 수 있는 글자(스펙 4.5). _read_arguments가 거절한다
+_CHARACTERS = (
+    "script에는 탭, 줄바꿈(LF, CRLF), 빈칸 말고는 제어 문자나 보이지 않는 글자(ESC, 홀로 쓴 CR, 방향 제어 문자, "
+    "폭 없는 글자, BOM 등)를 그대로 넣지 마세요. 필요하면 스크립트 안에서 [char]0x1B처럼 만드세요."
 )
 # 템플릿은 서버에서 문장 하나가 실패해도 다음 문장으로 가고(상태 OK), 서버의 Out-Host와 $Host.UI 글은 받지 못한다
 _RESULTS = (
@@ -150,8 +153,8 @@ def descriptions(rules: dict) -> dict[str, str]:
     ]
     return {
         LIST_SERVERS: f"{SAFETY}\n{_LIST_SERVERS}",
-        RUN_QUERY: "\n".join([SAFETY, *query, _RESULTS]),
-        RUN_SCRIPT: "\n".join([SAFETY, _RUN_SCRIPT, _RESULTS]),
+        RUN_QUERY: "\n".join([SAFETY, *query, _CHARACTERS, _RESULTS]),
+        RUN_SCRIPT: "\n".join([SAFETY, _RUN_SCRIPT, _CHARACTERS, _RESULTS]),
     }
 
 
@@ -290,6 +293,14 @@ def _read_arguments(tool: str, arguments: dict) -> _Request | str:
     script = arguments.get("script")
     if not isinstance(script, str) or not 1 <= len(script) <= SCRIPT_MAX:
         return f"script는 1~{SCRIPT_MAX:,}자의 글자여야 합니다."
+    # 홀로 쓴 CR은 PowerShell에는 줄바꿈이지만 터미널에는 줄 앞으로 돌아가기다. LF 바로 앞의 CR만 받는다
+    hidden = first_hidden(script.replace("\r\n", "\n"), keep="\t\n", spaces=True)
+    if hidden is not None:
+        return (
+            f"script에 {_code_point(hidden)} 글자가 있습니다. 확인 창에서 보이지 않거나 실제와 다르게 보일 수 있는 "
+            "글자는 받지 않습니다(탭, 줄바꿈 LF와 CRLF, 빈칸은 됩니다). "
+            f"그런 글자가 필요하면 스크립트 안에서 {_made(hidden)}처럼 만드세요."
+        )
     if _blank(script):
         return "script에 주석과 빈칸밖에 없습니다."
     timeout = arguments.get("timeout_seconds", TIMEOUT_DEFAULT)
@@ -298,9 +309,26 @@ def _read_arguments(tool: str, arguments: dict) -> _Request | str:
     reason = None
     if tool == RUN_SCRIPT:
         reason = arguments.get("reason")
-        if not isinstance(reason, str) or not 1 <= len(reason) <= REASON_MAX or _LINE_BREAK.search(reason):
+        if not isinstance(reason, str) or not 1 <= len(reason) <= REASON_MAX:
             return f"reason은 줄바꿈 없는 1~{REASON_MAX}자의 글자여야 합니다."
+        hidden = first_hidden(reason)  # 이름 규칙 그대로다. 줄바꿈, 탭, U+0020이 아닌 빈칸도 받지 않는다
+        if hidden is not None:
+            return (
+                f"reason에 {_code_point(hidden)} 글자가 있습니다. reason은 보이는 글자와 보통 빈칸(U+0020)으로 "
+                "한 줄로 쓰세요."
+            )
     return _Request(tuple(targets), script, timeout, reason)
+
+
+def _code_point(char: str) -> str:
+    """U+001B처럼 적은 글자. 받은 글자를 그대로 옮겨 적지 않는다."""
+    return f"U+{ord(char):04X}"
+
+
+def _made(char: str) -> str:
+    """스크립트 안에서 그 글자를 만드는 식. [char]는 U+FFFF까지만 담는다."""
+    code = ord(char)
+    return f"[char]0x{code:X}" if code <= 0xFFFF else f"[char]::ConvertFromUtf32(0x{code:X})"
 
 
 def _blank(script: str) -> bool:

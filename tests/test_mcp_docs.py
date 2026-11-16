@@ -299,6 +299,13 @@ def test_the_spec_bounds_the_server_list_and_query_refusals():
     assert "200개까지" in _spec_section("### 4.5 ")
 
 
+def test_the_spec_says_which_characters_a_script_and_a_reason_cannot_hold():
+    script = _spec_section("### 4.5 ")
+    assert "홀로 쓴 CR" in script and "`U+001B`" in script and "`[char]0x1B`" in script
+    assert "U+0020" in _spec_section("### 4.4 ") and "유일한 장치" in _spec_section("### 4.4 ")
+    assert "홀로 쓴 CR" in _spec_section("## 12. ")
+
+
 def test_the_spec_says_how_two_processes_share_the_logs():
     assert "hq-mcp.log`를 함께 쓴다" in _spec_section("## 3. ")
     text = _spec_section("## 10. ")
