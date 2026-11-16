@@ -181,6 +181,13 @@ def test_list_servers_cleans_the_text_fields_and_tells_when_the_password_file_is
     assert (server["group"], server["memo"]) == ("운영[2J", "점검[2J 메모\n둘째 줄")
 
 
+def test_list_servers_cleans_the_name_when_the_nickname_forms_the_target(tmp_path):
+    extra = {"nickname": "웹"}
+    handlers, _ = world(tmp_path, [("웹\x1b[2J01", "10.0.1.21", extra)], on=["10.0.1.21"])
+    [server] = json.loads(call(handlers, "list_servers").text)["servers"]
+    assert (server["target"], server["name"]) == ("웹 (10.0.1.21)", "웹[2J01")
+
+
 def test_a_missing_inventory_gives_an_empty_list_with_a_reason(tmp_path):
     handlers, _ = world(tmp_path, None)
     result = call(handlers, "list_servers")
@@ -549,6 +556,32 @@ def test_the_call_keeps_the_addresses_it_read_at_the_start(tmp_path):
     assert len(fakes.execute.jobs) == 1 and fakes.execute.jobs[0].host != "192.0.2.50"
 
 
+def test_a_host_changed_during_the_call_is_never_used(tmp_path):
+    handlers, fakes = world(
+        tmp_path,
+        [("웹01", "10.0.1.21"), ("앱", "10.0.1.23")],
+        on=["10.0.1.21", "10.0.1.23"],
+        slots=threading.BoundedSemaphore(1),
+    )
+    inventory = tmp_path / "inventory.json"
+
+    def move_the_other(job):  # 비밀번호 파일은 그대로 두고 host만 바꾼다
+        if len(fakes.execute.jobs) > 1:
+            return
+        other = "10.0.1.23" if job.host == "10.0.1.21" else "10.0.1.21"
+        data = json.loads(inventory.read_text(encoding="utf-8"))
+        for item in data["servers"]:
+            if item["host"] == other:
+                item["host"] = "192.0.2.50"
+        inventory.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    fakes.execute.during = move_the_other
+    rows = rows_of(call(handlers, "run_query", targets=[WEB, APP], script="Get-Date"))
+    assert [r["status"] for r in rows] == ["OK", "OK"]
+    assert sorted(job.host for job in fakes.execute.jobs) == ["10.0.1.21", "10.0.1.23"]
+    assert "192.0.2.50" not in fakes.resolve.calls and all("192.0.2.50" not in hosts for hosts in fakes.probe.calls)
+
+
 def test_cancelling_writes_the_cancel_file_for_running_servers(tmp_path):
     handlers, fakes = world(tmp_path, [("웹01", "10.0.1.21")], on=["10.0.1.21"])
     running, seen = threading.Event(), []
@@ -571,6 +604,21 @@ def test_cancelling_writes_the_cancel_file_for_running_servers(tmp_path):
     assert cancel_path.name == "0.cancel" and cancel_path.parent.parent == tmp_path / "mcp-run"
     assert not cancel_path.parent.exists()  # 호출이 끝나면 그 호출의 폴더를 지운다
     assert [line["event"] for line in fakes.audit_lines()] == ["start", "end"]
+
+
+def test_a_server_that_gets_a_slot_after_the_cancel_is_not_started(tmp_path):
+    cancel = threading.Event()
+
+    def probe_then_cancel(hosts):  # 사전 확인을 지난 뒤, 자리를 얻기 전에 취소된다
+        cancel.set()
+        return dict.fromkeys(hosts, True)
+
+    handlers, fakes = world(
+        tmp_path, [("웹01", "10.0.1.21"), ("앱", "10.0.1.23")], on=["10.0.1.21", "10.0.1.23"], probe=probe_then_cancel
+    )
+    result = handlers["run_query"]({"targets": [WEB, APP], "script": "Get-Date"}, cancel)
+    assert [r["status"] for r in rows_of(result)] == ["NOT_STARTED", "NOT_STARTED"]
+    assert fakes.execute.jobs == []
 
 
 def test_a_cancelled_call_does_not_wait_for_a_slot_another_call_holds(tmp_path):
