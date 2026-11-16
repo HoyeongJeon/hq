@@ -4,6 +4,12 @@
 # probe-log.txt도 함께 지워지므로 protocolVersion은 먼저 적어 둔다.
 
 $ErrorActionPreference = 'Stop'
+# 지울 임시 파일의 경로는 TEMP에서 만든다. 비었거나 드라이브부터 적은 전체 경로가 아니면 그 경로가 현재 폴더에 따라
+# 달라지므로 아무것도 하지 않고 멈춘다
+if ([string]::IsNullOrWhiteSpace($env:TEMP) -or $env:TEMP -notmatch '^[A-Za-z]:\\') {
+    Write-Host "TEMP 환경 변수가 비었거나 C:\...처럼 드라이브부터 적은 전체 경로가 아닙니다('$env:TEMP'). 아무것도 지우지 않았습니다."
+    exit 1
+}
 $probeDir = 'C:\dev\hq-mcp-probe'
 $outside = Join-Path $env:TEMP 'hq-probe-outside.txt'
 

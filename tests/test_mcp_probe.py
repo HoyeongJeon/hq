@@ -125,11 +125,12 @@ def test_the_remove_script_unregisters_the_probe_and_deletes_what_setup_made():
     assert "C:\\dev\\hq-mcp-probe" in text and "hq-probe-outside.txt" in text
 
 
-@pytest.mark.parametrize("start", ["probe", "probe/.claude", "."])
-def test_the_remove_script_deletes_the_folder_even_when_started_inside_it(tmp_path, start):
-    # Windows는 어느 프로세스의 현재 폴더인 폴더를 지우지 못하게 한다. A-3에서 폴더 안에서 실행해 폴더가 남았다
-    # (2026-11-16). 스크립트의 폴더 경로를 tmp로 바꾼 사본을 돌린다. PATH를 좁혀 진짜 claude 대신 tmp의 claude.cmd가
-    # 불리게 하므로 Claude Code의 설정은 건드리지 않는다
+def _run_remove_copy(tmp_path: Path, start: str, temp_value: str | None = None) -> subprocess.CompletedProcess:
+    """remove-probe.ps1의 사본을 tmp에서 돌린다. 폴더 경로는 tmp/probe, TEMP는 tmp/temp(temp_value를 주면 그 값)다.
+
+    PATH를 좁혀 진짜 claude 대신 tmp/bin/claude.cmd가 불리게 하므로 Claude Code의 설정은 건드리지 않는다. 그 가짜는
+    받은 인자와 현재 폴더를 tmp/bin/args.txt에 쓴다.
+    """
     probe_dir = tmp_path / "probe"
     (probe_dir / ".claude").mkdir(parents=True)
     (probe_dir / "probe-log.txt").write_text("x", encoding="utf-8")
@@ -144,15 +145,34 @@ def test_the_remove_script_deletes_the_folder_even_when_started_inside_it(tmp_pa
     copy = tmp_path / "remove-probe.ps1"
     copy.write_text(text.replace("'C:\\dev\\hq-mcp-probe'", f"'{probe_dir}'"), encoding="utf-8-sig")
     system = Path(os.environ["SYSTEMROOT"]) / "System32"
-    env = {**os.environ, "TEMP": str(temp), "TMP": str(temp), "PATH": f"{stub};{system}"}
-    done = subprocess.run(
+    temp_text = str(temp) if temp_value is None else temp_value
+    env = {**os.environ, "TEMP": temp_text, "TMP": temp_text, "PATH": f"{stub};{system}"}
+    return subprocess.run(
         [str(system / "WindowsPowerShell/v1.0/powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive",
          "-ExecutionPolicy", "Bypass", "-File", str(copy)],
         cwd=tmp_path / start, env=env, capture_output=True, timeout=60,
     )  # fmt: skip
-    called = (stub / "args.txt").read_text(encoding="ascii", errors="replace").splitlines()
+
+
+@pytest.mark.parametrize("start", ["probe", "probe/.claude", "."])
+def test_the_remove_script_deletes_the_folder_even_when_started_inside_it(tmp_path, start):
+    # Windows는 어느 프로세스의 현재 폴더인 폴더를 지우지 못하게 한다. A-3에서 폴더 안에서 실행해 폴더가 남았다
+    # (2026-11-16). 스크립트의 폴더 경로를 tmp로 바꾼 사본을 돌린다
+    done = _run_remove_copy(tmp_path, start)
+    called = (tmp_path / "bin/args.txt").read_text(encoding="ascii", errors="replace").splitlines()
     assert called[0].strip() == "mcp remove hq --scope local"
     assert called[1].lower().endswith("\\probe")  # local 범위 등록은 그 폴더에서 지운다
     assert done.returncode == 0, done.stderr.decode("cp949", "replace")
-    assert not probe_dir.exists()
-    assert not (temp / "hq-probe-outside.txt").exists()
+    assert not (tmp_path / "probe").exists()
+    assert not (tmp_path / "temp/hq-probe-outside.txt").exists()
+
+
+@pytest.mark.parametrize("temp_value", ["", "temp", "C:temp"])
+def test_the_remove_script_stops_before_anything_when_temp_is_not_a_full_path(tmp_path, temp_value):
+    # TEMP가 비었거나 상대 경로면 지울 임시 파일의 경로가 현재 폴더에 따라 달라진다. 아무것도 하지 않고 멈춘다
+    done = _run_remove_copy(tmp_path, ".", temp_value)
+    assert done.returncode == 1, done.stderr.decode("cp949", "replace")
+    assert "TEMP" in done.stdout.decode("cp949", "replace")
+    assert not (tmp_path / "bin/args.txt").exists()  # 등록 해제도 하지 않았다
+    assert (tmp_path / "probe/probe-log.txt").exists()
+    assert (tmp_path / "temp/hq-probe-outside.txt").exists()
