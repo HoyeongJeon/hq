@@ -19,12 +19,53 @@ When several admins sign in over RDP with the same admin account, whoever signs 
 
 The interface is in Korean.
 
+## Claude Code (MCP)
+
+`python -m hq.mcp` is an MCP server for Claude Code. Claude Code starts it as a child process and talks to it over standard input and output. It uses HQ's server list and stored passwords directly, so the HQ window does not need to be open, and it opens no network port. It offers three tools:
+
+- `list_servers`: the servers you turned on for it, with name, nickname, host, group, memo and whether a password is stored. Never the account name, the server id or the password file.
+- `run_query`: runs a script on those servers without asking you, but only if a check on this PC parses it and finds nothing but allowed read commands and syntax. Anything else is refused.
+- `run_script`: runs any script on those servers. Claude Code asks you before every call.
+
+Every server is off until you turn it on by host. An address you forbid is never contacted from this PC, even if its server was turned on (a script running on another server can still reach it):
+
+```powershell
+uv run --project C:\dev\hq python -m hq.mcp list               # every server and its state; no network
+uv run --project C:\dev\hq python -m hq.mcp on <host>...       # or: on --group <group>
+uv run --project C:\dev\hq python -m hq.mcp off <host>...
+uv run --project C:\dev\hq python -m hq.mcp never <IP>...      # to undo, edit mcp-access.json by hand
+```
+
+**Register it only in `C:\dev\hq-ops`.** A Claude Code session in `C:\dev\hq` is for working on HQ itself and must not be able to reach real servers, so the server is registered with local scope in a separate folder, never with user scope. It runs from the current files in `C:\dev\hq`, so a change there is live the next time a session in `C:\dev\hq-ops` starts. The paths below assume the repository is at `C:\dev\hq`.
+
+Install (section 13.4 of the [MCP design](docs/specs/2026-11-04-hq-mcp-design.md)):
+
+1. Forbid the servers it must never touch: `uv run --project C:\dev\hq python -m hq.mcp never <IP>`. Type the address yourself; do not give it to Claude.
+2. Turn on the servers it may use: `uv run --project C:\dev\hq python -m hq.mcp on <host>...`
+3. Check that `permissions.allow` in your user settings (`~/.claude/settings.json`) has no broad rule for Bash, PowerShell, web or connector tools. Allow rules from all settings files add up, so such a rule would let those tools run without asking in `C:\dev\hq-ops` too.
+4. Register it with the permission settings of section 13.2:
+
+   ```powershell
+   New-Item -ItemType Directory -Force C:\dev\hq-ops\.claude | Out-Null
+   Copy-Item C:\dev\hq\tools\mcp\settings.local.json C:\dev\hq-ops\.claude\settings.local.json
+   cd C:\dev\hq-ops
+   claude mcp add --scope local --transport stdio hq -- uv run --project C:\dev\hq python -m hq.mcp
+   ```
+
+5. Start Claude Code in `C:\dev\hq-ops`.
+
+**What goes to Claude.** Server names, nicknames, hosts, groups and memos, every script, and what the servers print are sent to Claude (Anthropic) and kept according to your account's data settings. Remove passwords or account details from a server's memo before you turn it on.
+
+**What stays on this PC.** Every script Claude sends is recorded in full in `%LOCALAPPDATA%\hq\logs\mcp-audit-YYYY-MM.jsonl`, one JSON line per event: the start of a call (time, call id, targets, the whole script, its SHA-256, the reason given), its end (status, exit code, time and output length per server) and each script a check refused, with the reason. Server output is not recorded, but a password written into a script is, in plain text. The file is never deleted automatically. The server's own log is `%LOCALAPPDATA%\hq\logs\hq-mcp.log`.
+
+**This is not a security boundary.** Claude Code runs under your Windows account, the same one as HQ, so it can decrypt the password files and edit the list of allowed servers with its other tools. The query check and the confirmation prompt reduce accidents in the scripts Claude normally writes; a deliberately crafted script, such as one suggested by text planted in a server's output, can get past the check. The permission settings in `C:\dev\hq-ops` make Claude Code ask before most of its own shell commands and keep its file tools inside that folder, but they match text and live in files your account can change. Section 12 of the MCP design lists what is and is not covered.
+
 ## Security
 
 - **Passwords stay on this PC.** They are encrypted with Windows DPAPI (current user) and stored under `%LOCALAPPDATA%\hq\`. There is no sharing or sync.
 - **HQ opens no network port.** The window (WebView2) and the app talk only through function calls inside one process.
 - **Input meant for a server never runs on this PC.** When a remote session drops, PowerShell normally falls back to this PC's prompt, and anything typed ahead could run locally at that moment. HQ closes that path by ending the tab's PowerShell as soon as the session drops. A tab receives no input until it signals that this safeguard is in place.
-- **Logs never contain passwords or terminal input and output.**
+- **`hq.log` never holds what you type or what a server prints,** and never a password. The MCP server's script record is a separate file (see above).
 - **Known limits:** authentication is NTLM. It does not verify the server's identity, so it cannot stop an attacker who is already in the middle of the internal network. Use a different long password on each server. Malware running under your own account can decrypt the DPAPI files.
 
 The full threat model is in section 8 of the [design document](docs/specs/2026-10-15-hq-design.md).
@@ -76,6 +117,8 @@ These are written in Korean.
 - [Design](docs/specs/2026-10-15-hq-design.md)
 - [Acceptance criteria and results](docs/acceptance.md)
 - [Verification against a real server](docs/verification.md)
+- [MCP server design](docs/specs/2026-11-04-hq-mcp-design.md)
+- [MCP manual checks and results](docs/mcp-acceptance.md)
 
 ## License
 
