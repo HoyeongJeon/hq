@@ -13,6 +13,7 @@ import re
 import socket
 import threading
 import time
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,10 @@ _KEYS = {"version", "enabled", "never"}
 _ITEM_KEYS = {"id", "host"}
 # C0, DEL, C1. 대상 글자는 확인 창과 결과에 그대로 찍히므로 화면을 지우는 ESC 시퀀스 같은 것이 든 별명은 쓰지 않는다
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# target에 들면 쓰지 않는 글자의 Unicode 범주: 제어(Cc), 서식(Cf: 방향 제어, 폭 없는 글자, BOM, 태그 문자), 줄과 문단
+# 나눔(Zl, Zp), 사용자 정의(Co), 정해지지 않은 글자(Cn), 짝 없는 서로게이트(Cs). target은 확인 창, 결과, 실행 기록에
+# 그대로 찍힌다. 이런 글자는 host 부분을 다르게 보이게 하거나, 사람은 못 보고 Claude만 읽는 글을 만든다
+_HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cn", "Cs"})
 # HQ 창이 inventory.json을 바꿔치기하는 순간에 읽으면 WinError 5로 실패하고 곧 풀린다(스펙 3장). fileops와 같은 값
 _READ_ATTEMPTS = 5
 _READ_DELAY = 0.05
@@ -213,9 +218,27 @@ def usable(servers: Sequence[Server], access: Access) -> list[Server]:
         server
         for server in servers
         if (server.id, server.host.lower()) in enabled
-        and not _CONTROL.search(server.display_name)
+        and not _hidden_in(server.display_name)  # _CONTROL의 글자(Cc)도 여기에 든다
         and not _forbidden_ip(server.host, access.never)
     ]
+
+
+def name_problems(servers: Sequence[Server]) -> list[str]:
+    """target을 이루는 이름(별명, 별명이 없으면 이름)에 _HIDDEN_CATEGORIES의 글자가 든 서버마다 사람에게 보일 한 줄.
+
+    usable은 이 서버들을 내놓지 않는다. 문제 글자는 옮겨 적지 않고 서버 목록의 순서와 host(영문, 숫자, 점, -만 든다)로
+    가리킨다.
+    """
+    return [
+        f"서버 목록의 {number}번째 서버(host {server.host})는 이름에 보이지 않는 글자나 글자 순서를 바꾸는 글자가 있어 "
+        "MCP에서 쓰지 않습니다. HQ에서 별명이나 이름을 고치세요."
+        for number, server in enumerate(servers, 1)
+        if _hidden_in(server.display_name)
+    ]
+
+
+def _hidden_in(text: str) -> bool:
+    return any(unicodedata.category(char) in _HIDDEN_CATEGORIES for char in text)
 
 
 def _forbidden_ip(host: str, never: Sequence[str]) -> bool:

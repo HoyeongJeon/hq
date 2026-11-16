@@ -13,6 +13,7 @@ from hq.mcp.access import (
     load_access,
     load_server_list,
     load_servers,
+    name_problems,
     resolve_host,
     save_access,
     target_of,
@@ -127,6 +128,44 @@ def test_usable_ignores_the_case_of_the_host_and_leaves_names_to_the_lookup():
 def test_a_nickname_with_a_control_character_cannot_be_used():
     old = Server(ID_A, "웹", "10.0.1.21", "admin", nickname="웹\x1b[2J")
     assert usable([old], Access(enabled=((ID_A, "10.0.1.21"),))) == []
+
+
+HIDDEN = {
+    "rlo": "\u202e",  # 글자 순서를 뒤집어 보이게 한다
+    "tag": "\U000e0041",
+    "zero-width-space": "\u200b",
+    "line-separator": "\u2028",
+    "paragraph-separator": "\u2029",
+    "bom": "\ufeff",
+    "private-use": "\ue000",
+    "unassigned": "\u0378",
+    "lone-surrogate": "\ud800",
+    "c1": "\x85",
+}
+
+
+@pytest.mark.parametrize("hidden", HIDDEN.values(), ids=HIDDEN.keys())
+def test_a_target_name_with_an_invisible_or_direction_character_is_not_usable(hidden):
+    by_nickname = Server(ID_A, "웹", "10.0.1.21", "admin", nickname=f"웹{hidden}01")
+    by_name = Server(ID_B, f"디비{hidden}02", "10.0.1.22", "admin")  # 별명이 없어 이름이 target이 된다
+    access = Access(enabled=((ID_A, "10.0.1.21"), (ID_B, "10.0.1.22")))
+    assert usable([by_nickname, by_name], access) == []
+    problems = name_problems([by_nickname, by_name])
+    assert len(problems) == 2 and all(hidden not in problem for problem in problems)
+    assert "1번째" in problems[0] and "10.0.1.21" in problems[0] and "2번째" in problems[1]
+
+
+@pytest.mark.parametrize("name", ["웹서버 01", "Web-01_a (주)", "디비2", "app server (test)"])
+def test_ordinary_names_stay_usable(name):
+    servers = [Server(ID_A, name, "10.0.1.21", "admin"), Server(ID_B, "웹", "10.0.1.22", "admin", nickname=name)]
+    access = Access(enabled=((ID_A, "10.0.1.21"), (ID_B, "10.0.1.22")))
+    assert usable(servers, access) == servers and name_problems(servers) == []
+
+
+def test_only_the_text_that_forms_the_target_is_judged():
+    # 별명이 있으면 이름은 target에 들지 않는다. list_servers는 그 이름을 clean_text로 거른 뒤 보낸다
+    server = Server(ID_A, "웹\u202e01", "10.0.1.21", "admin", nickname="웹")
+    assert usable([server], Access(enabled=((ID_A, "10.0.1.21"),))) == [server] and name_problems([server]) == []
 
 
 def test_resolve_returns_every_address_and_none_when_it_takes_too_long():
