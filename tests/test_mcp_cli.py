@@ -67,6 +67,37 @@ def test_on_group_skips_forbidden_servers_and_says_so(tmp_path):
     assert run(tmp_path, "on", "--group", "없는 그룹")[0] == 2
 
 
+def test_on_all_enables_every_group_and_skips_forbidden_servers(tmp_path):
+    inventory(
+        tmp_path,
+        [
+            ("웹01", "10.0.1.21", "운영"),
+            ("디비", "10.0.1.22", ""),
+            ("창고", "10.0.1.99", "운영"),
+            ("시험", "192.0.2.7", "시험"),
+        ],
+    )
+    assert run(tmp_path, "never", "10.0.1.99")[0] == 0
+    code, text = run(tmp_path, "on", "--all")
+    assert code == 0 and "건너뜁니다" in line_with(text, "10.0.1.99")
+    assert enabled_hosts(tmp_path) == ["10.0.1.21", "10.0.1.22", "192.0.2.7"]
+    assert load_access(tmp_path / "mcp-access.json").never == ("10.0.1.99",)
+
+
+def test_on_all_skips_a_name_the_mcp_rule_refuses(tmp_path):
+    inventory(tmp_path, [("웹01", "10.0.1.21", "운영"), ("디‮비", "10.0.1.22", "운영")])
+    code, text = run(tmp_path, "on", "--all")
+    assert code == 0 and "건너뜁니다" in line_with(text, "10.0.1.22")
+    assert enabled_hosts(tmp_path) == ["10.0.1.21"]
+
+
+def test_on_all_with_no_servers_changes_nothing(tmp_path):
+    inventory(tmp_path, [])
+    code, text = run(tmp_path, "on", "--all")
+    assert code == 2 and "등록된 서버가 없습니다" in text
+    assert not (tmp_path / "mcp-access.json").exists()
+
+
 def test_on_group_finds_ungrouped_servers_by_the_name_hq_shows(tmp_path):
     # HQ 화면은 그룹이 빈 서버를 미분류 아래에 보여 준다
     inventory(tmp_path, [("웹01", "10.0.1.21", ""), ("디비", "10.0.1.22", "운영")])
@@ -188,7 +219,7 @@ def test_the_command_line_uses_the_same_rule_for_a_name_behind_a_clean_nickname(
 def test_the_usage_says_on_refuses_names_with_hidden_characters(tmp_path):
     lines = run(tmp_path, "help")[1].splitlines()
     on_lines = [line for line in lines if "hq.mcp on " in line]
-    assert len(on_lines) == 2 and all("보이지 않는 글자" in line for line in on_lines)
+    assert len(on_lines) == 3 and all("보이지 않는 글자" in line for line in on_lines)
 
 
 def test_list_escapes_the_spaces_and_fillers_the_name_rule_refuses(tmp_path):
@@ -217,7 +248,7 @@ def test_every_printed_line_escapes_what_the_terminal_would_act_on(tmp_path):
 def test_the_usage_is_printed_line_by_line(tmp_path):
     code, text = run(tmp_path, "help")
     lines = text.splitlines()
-    assert code == 2 and lines[0] == "사용법:" and len(lines) == 6 and "\\x0a" not in text
+    assert code == 2 and lines[0] == "사용법:" and len(lines) == 7 and "\\x0a" not in text
 
 
 def test_on_keeps_one_entry_per_server(tmp_path):
@@ -243,8 +274,8 @@ def test_on_and_off_find_a_name_host_in_any_case(tmp_path):
 
 @pytest.mark.parametrize(
     "argv",
-    [("on", "10.0.1.21"), ("on", "--group", "운영"), ("off", "10.0.1.21"), ("never", "10.0.1.99")],
-    ids=["on", "on-group", "off", "never"],
+    [("on", "10.0.1.21"), ("on", "--group", "운영"), ("on", "--all"), ("off", "10.0.1.21"), ("never", "10.0.1.99")],
+    ids=["on", "on-group", "on-all", "off", "never"],
 )
 def test_a_broken_settings_file_is_not_overwritten(tmp_path, argv):
     inventory(tmp_path, [("웹01", "10.0.1.21", "운영")])
@@ -263,7 +294,7 @@ def test_list_says_why_a_broken_settings_file_turns_everything_off(tmp_path):
     assert code == 0 and "JSON" in text and "꺼짐" in line_with(text, "웹01")
 
 
-@pytest.mark.parametrize("argv", [("list",), ("on", "10.0.1.21"), ("on", "--group", "운영")])
+@pytest.mark.parametrize("argv", [("list",), ("on", "10.0.1.21"), ("on", "--group", "운영"), ("on", "--all")])
 def test_commands_that_need_the_server_list_say_it_is_missing(tmp_path, argv):
     code, text = run(tmp_path, *argv)
     assert code == 2 and "서버 목록 파일이 없습니다" in text
@@ -272,9 +303,15 @@ def test_commands_that_need_the_server_list_say_it_is_missing(tmp_path, argv):
 
 @pytest.mark.parametrize(
     "argv",
-    [("on", "--all"), ("off", "--all"), ("allow", "10.0.1.99"), ("unban", "10.0.1.99")],
+    [
+        ("off", "--all"),
+        ("never", "--all"),
+        ("on", "--all", "10.0.1.21"),
+        ("allow", "10.0.1.99"),
+        ("unban", "10.0.1.99"),
+    ],
 )
-def test_there_is_no_all_and_no_command_to_lift_a_ban(tmp_path, argv):
+def test_all_only_turns_on_and_there_is_no_command_to_lift_a_ban(tmp_path, argv):
     inventory(tmp_path, [("웹01", "10.0.1.21", "운영"), ("디비", "10.0.1.99", "운영")])
     assert run(tmp_path, "never", "10.0.1.99")[0] == 0
     code, text = run(tmp_path, *argv)

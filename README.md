@@ -31,7 +31,7 @@ Every server is off until you turn it on by host. The MCP server does not connec
 
 ```powershell
 uv run --project C:\dev\hq python -m hq.mcp list               # every server and its state; no network
-uv run --project C:\dev\hq python -m hq.mcp on <host>...       # or: on --group <group>
+uv run --project C:\dev\hq python -m hq.mcp on <host>...       # or: on --group <group>, on --all
 uv run --project C:\dev\hq python -m hq.mcp off <host>...
 uv run --project C:\dev\hq python -m hq.mcp never <IP>...      # to undo, edit mcp-access.json by hand
 ```

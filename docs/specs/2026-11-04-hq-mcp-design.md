@@ -158,10 +158,11 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 | `python -m hq.mcp list` | 모든 서버와 상태(켜짐, 꺼짐, 금지). 네트워크를 쓰지 않는다 |
 | `python -m hq.mcp on <host>...` | 켜기. host가 금지 IP인 서버는 거절한다. 이름 host는 실행 때 비교한다 |
 | `python -m hq.mcp on --group <그룹>` | 그룹을 켜기. host가 금지 IP인 서버는 건너뛰고 알린다 |
+| `python -m hq.mcp on --all` | 지금 목록의 모든 서버를 켜기. host가 금지 IP인 서버는 건너뛰고 알린다 |
 | `python -m hq.mcp off <host>...` | 끄기 |
 | `python -m hq.mcp never <IP>...` | 금지 목록에 넣고 host가 그 IP인 서버를 `enabled`에서 뺀다. 목록에 없는 IP도 받는다 |
 
-인자 없는 `python -m hq.mcp`만 MCP 서버로 돈다. `--all`은 두지 않는다. 금지 해제 명령도 두지 않고 파일을 직접 고친다.
+인자 없는 `python -m hq.mcp`만 MCP 서버로 돈다. `on --all`은 그때 목록에 있는 서버만 켠다. 설정에는 서버마다 적으므로 나중에 추가한 서버는 꺼진 채로 시작한다(2026-11-18 사용자 요청으로 추가). `off --all`과 금지 해제 명령은 두지 않고 파일을 직접 고친다.
 
 **건드리지 않기로 정한 운영 서버는 설치 첫 단계에서 `never`에 넣는다.** 실제 주소는 이 문서와 저장소에 적지 않는다.
 

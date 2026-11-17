@@ -1,7 +1,8 @@
 """MCP가 쓸 서버를 사람이 정하는 명령줄(list, on, off, never). 스펙 6장.
 
-Claude가 아니라 사용자가 정한다. MCP 기능으로 내놓지 않는다. --all과 금지를 푸는 명령은 두지 않는다. 금지를 풀려면
-mcp-access.json을 직접 고친다. host는 usable처럼 IP면 주소 값으로, 이름이면 대소문자 없이 비교한다.
+Claude가 아니라 사용자가 정한다. MCP 기능으로 내놓지 않는다. on --all은 지금 목록의 서버만 켠다(나중에 추가한
+서버는 꺼진 채로 시작한다). 금지를 푸는 명령은 두지 않는다. 금지를 풀려면 mcp-access.json을 직접 고친다.
+host는 usable처럼 IP면 주소 값으로, 이름이면 대소문자 없이 비교한다.
 네트워크를 쓰지 않는다(이름을 풀지 않는다). 이름 host와 금지 주소의 비교는 MCP가 실행 때 한다.
 찍는 줄은 모두 shown을 거친다. 이름, 그룹, 사람이 친 인자에 든 제어 문자나 방향 제어 문자가 터미널 화면을 바꾸지 않는다.
 """
@@ -35,6 +36,7 @@ USAGE = """\
   python -m hq.mcp list                 모든 서버와 상태(켜짐, 꺼짐, 금지, 쓸 수 없음)
   python -m hq.mcp on <host>...         켜기. host가 금지 IP이거나 이름에 보이지 않는 글자가 있는 서버는 거절한다
   python -m hq.mcp on --group <그룹>    그룹을 켜기. host가 금지 IP이거나 이름에 보이지 않는 글자가 있는 서버는 건너뛴다
+  python -m hq.mcp on --all             지금 목록의 모든 서버를 켜기. 금지 IP와 보이지 않는 글자가 든 이름은 건너뛴다
   python -m hq.mcp off <host>...        끄기
   python -m hq.mcp never <IP>...        금지 목록에 넣고 끄기. 풀려면 mcp-access.json을 직접 고친다"""
 UNCHANGED = "아무것도 바꾸지 않았습니다."
@@ -74,7 +76,9 @@ def _run(argv: list[str], data: Path) -> Result:
         return _list(data)
     if command == "on" and len(args) == 2 and args[0] == "--group":
         return _on_group(args[1], data)
-    # host와 IP는 -로 시작하지 않으므로 --all 같은 것은 모두 사용법 오류다
+    if command == "on" and args == ["--all"]:
+        return _on_all(data)
+    # host와 IP는 -로 시작하지 않으므로 off --all 같은 것은 모두 사용법 오류다
     if command in ("on", "off", "never") and args and not any(arg.startswith("-") for arg in args):
         return {"on": _on, "off": _off, "never": _never}[command](args, data)
     return REFUSED, USAGE.splitlines()
@@ -130,13 +134,28 @@ def _on_group(group: str, data: Path) -> Result:
     members = [server for server in servers if (server.group or UNGROUPED) == group.strip()]
     if not members:
         return REFUSED, [f"그룹에 서버가 없습니다: {group}"]
+    return OK, _enable_allowed(data, access, members)
+
+
+def _on_all(data: Path) -> Result:
+    """지금 서버 목록의 모든 서버를 켠다. 설정에는 서버마다 적으므로 나중에 추가한 서버는 켜지지 않는다."""
+    access, servers, problem = _load(data)
+    if problem:
+        return REFUSED, [problem]
+    if not servers:
+        return REFUSED, ["등록된 서버가 없습니다.", UNCHANGED]
+    return OK, _enable_allowed(data, access, servers)
+
+
+def _enable_allowed(data: Path, access: Access, members: list[Server]) -> list[str]:
+    """켤 수 없는 서버는 건너뛰고 알리며 나머지를 켠다."""
     lines, chosen = [], []
     for server in members:
         if reason := _why_not(server, access):
             lines.append(f"{reason} 건너뜁니다: {target_of(server)}")
         else:
             chosen.append(server)
-    return OK, lines + _enable(data, access, chosen)
+    return lines + _enable(data, access, chosen)
 
 
 def _off(hosts: list[str], data: Path) -> Result:
