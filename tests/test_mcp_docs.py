@@ -165,7 +165,13 @@ def test_the_preparation_turns_on_enough_servers_and_says_how_a_forbidden_name_s
 def test_mcp1_counts_a_baseline_and_states_the_pass_rule():
     item = _manual_item("MCP-1")
     # 카운터는 이 PC에서 필터를 따르지 않았다(2026-11-17). 파일로 받아 주소를 찾고, 켠 서버로 방법을 확인한다
-    for word in ("pktmon etl2txt", "`패킷 필터`로 시작하는 필터 기록 줄뿐이면 통과", "켠 서버 줄 수", "0이면 통과로 치지 않는다"):
+    words = (
+        "pktmon etl2txt",
+        "`패킷 필터`로 시작하는 필터 기록 줄뿐이면 통과",
+        "켠 서버 줄 수",
+        "0이면 통과로 치지 않는다",
+    )
+    for word in words:
         assert word in item, word
     assert "pktmon start -c -o" not in item
 
