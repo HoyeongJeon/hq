@@ -303,6 +303,7 @@ Claude Code는 처음부터 불러오는 기능 설명을 4,096자에서 자른�
 
 - `status`: `OK`, `SCRIPT_ERROR`, `AUTH_FAILED`, `UNREACHABLE`, `NOT_TRUSTED`, `QUOTA`, `SECRET_UNREADABLE`, `DISCONNECTED`, `TIMEOUT`, `CANCELLED`, `UNRESOLVED`, `NOT_STARTED`, `SPAWN_FAILED`, `UNKNOWN`.
 - 자식 PowerShell의 출력 인코딩을 UTF-8로 정해 받는다. 조각 경계에서 한글이 깨지지 않게 이어서 풀고, 그래도 깨진 바이트는 대체 문자로 바꾼다.
+- `Write-Host`로 쓴 글은 서버의 PowerShell이 5.0 이상일 때만 `output`에 온다. PowerShell 4.0(2012 R2)에서는 `status`가 `OK`이고 `output`이 빈 채로 온다(MCP-2, 2026-11-17 확인). 기능 설명이 결과를 `Write-Output`으로 내라고 Claude에게 알린다. 템플릿은 고치지 않는다 **[판단]**.
 - 출력이 아무리 많아도 표준 출력과 오류를 동시에 끝까지 읽어 비운다. 비우지 않으면 자식이 막혀 `TIMEOUT`처럼 보인다. 메모리에는 `output`과 `errors`를 합쳐 서버별로 앞 40,000자만 두고 나머지는 세기만 한다 **[판단]**. 잘리기 전의 전체 글자 수는 `output_chars`로 알려, Claude가 범위를 좁혀 다시 조회하게 한다.
 - 줄바꿈과 탭을 뺀 제어 문자를 지운다. 침해된 서버의 출력에 터미널 제어 문자가 섞일 수 있다. 화면에 보이지 않는 글자(유니코드 태그 문자 U+E0000~U+E007F)와 글자 순서를 바꿔 보이게 하는 방향 제어 문자(U+202A~U+202E, U+2066~U+2069)도 지운다. 사용자는 못 보고 Claude만 읽는 글을 출력에 심는 데 쓰일 수 있다.
 - 호출 전체의 결과 JSON을 크기 30,000 안에 둔다 **[판단]**. 크기는 완성된 JSON의 글자를 세되 ASCII 글자를 1, 그 밖의 글자(한글 등)를 4로 센다. 완성된 글자를 세는 이유는 둘이다. JSON에서는 줄바꿈, 역슬래시, 따옴표가 두 글자가 되어 경로나 짧은 줄이 많은 출력은 원래보다 길어진다. 서버가 많으면 대상과 상태 같은 틀만으로도 수천 자다. 틀을 뺀 나머지를 서버마다 `output`과 `errors` 몫으로 나누고, 잘렸으면 `truncated: true`로 알린다.

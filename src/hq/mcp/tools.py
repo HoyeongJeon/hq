@@ -109,12 +109,14 @@ _CHARACTERS = (
     "script에는 탭, 줄바꿈(LF, CRLF), 빈칸 말고는 제어 문자나 보이지 않는 글자(ESC, 홀로 쓴 CR, 방향 제어 문자, "
     "폭 없는 글자, BOM 등)를 그대로 넣지 마세요. 필요하면 스크립트 안에서 [char]0x1B처럼 만드세요."
 )
-# 템플릿은 서버에서 문장 하나가 실패해도 다음 문장으로 가고(상태 OK), 서버의 Out-Host와 $Host.UI 글은 받지 못한다
+# 템플릿은 서버에서 문장 하나가 실패해도 다음 문장으로 가고(상태 OK), 서버의 Out-Host와 $Host.UI 글은 받지 못한다.
+# Write-Host는 정보 스트림이 있는 PowerShell 5.0부터 온다. 4.0 서버에서는 빈 출력에 OK였다(MCP-2)
 _RESULTS = (
     "결과는 targets 순서대로 서버마다 status, output, errors, truncated, output_chars, seconds입니다. "
     "status OK는 스크립트가 끝까지 돌았다는 뜻일 뿐 오류가 없었다는 뜻이 아닙니다. 문장 하나가 실패하면 그 오류를 "
     "errors에 남기고 다음 문장으로 가니 errors도 보세요. 첫 오류에서 멈추려면 맨 앞에 "
-    "`$ErrorActionPreference = 'Stop'`을 쓰세요. 돌아오는 것은 파이프라인 출력과 Write-Host뿐이고, Out-Host나 "
+    "`$ErrorActionPreference = 'Stop'`을 쓰세요. 결과는 Write-Output이나 파이프라인 출력으로 내세요. Write-Host는 "
+    "서버의 PowerShell이 5.0보다 낮으면(2012 R2의 4.0 등) 오류 없이 빠집니다. Out-Host나 "
     "$Host.UI.WriteLine으로 쓴 글은 오지 않습니다. `output_chars`가 받은 글자보다 크면 범위를 좁혀 다시 조회하세요."
 )
 

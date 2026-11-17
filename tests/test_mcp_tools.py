@@ -1069,6 +1069,10 @@ def test_the_run_descriptions_say_what_ok_means_and_which_output_comes_back():
     for name in ("run_query", "run_script"):
         for word in ("OK", "errors", "Out-Host", "$Host.UI", "output_chars", "[char]0x1B"):
             assert word in texts[name], (name, word)
+        # PowerShell 4.0 서버(2012 R2)에서는 Write-Host 출력이 오류 없이 빠진다(MCP-2, 2026-11-17)
+        for word in ("Write-Output", "5.0보다 낮으면", "오류 없이 빠집니다"):
+            assert word in texts[name], (name, word)
+        assert "Write-Host뿐" not in texts[name]
 
 
 def test_the_tools_carry_the_shapes_of_the_schema():
