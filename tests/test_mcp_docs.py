@@ -164,8 +164,10 @@ def test_the_preparation_turns_on_enough_servers_and_says_how_a_forbidden_name_s
 
 def test_mcp1_counts_a_baseline_and_states_the_pass_rule():
     item = _manual_item("MCP-1")
-    for word in ("1분", "숫자가 0이 아닌 줄이 하나도 없으면 통과", "pktmon filter list", "확인하지 못했다"):
+    # 카운터는 이 PC에서 필터를 따르지 않았다(2026-11-17). 파일로 받아 주소를 찾고, 켠 서버로 방법을 확인한다
+    for word in ("pktmon etl2txt", "`패킷 필터`로 시작하는 필터 기록 줄뿐이면 통과", "켠 서버 줄 수", "0이면 통과로 치지 않는다"):
         assert word in item, word
+    assert "pktmon start -c -o" not in item
 
 
 def test_every_script_is_read_in_the_window_before_it_is_allowed():
@@ -208,9 +210,9 @@ def test_checkpoint_b_keeps_away_from_the_forbidden_server_and_the_stored_passwo
     assert "실행 기록이 아직 없다" in text
     mcp3 = _manual_item("MCP-3")
     assert "-like '*확인 창 시험*'" in mcp3 and "-like '*긴 스크립트 시험*'" in mcp3 and "[Math]::Max(0" in mcp3
-    # 기준에 0이 아닌 줄이 있으면 패킷 수로는 판단할 수 없다
+    # 카운터로 세지 않는다. 필터를 걸어도 모든 패킷을 셌다
     mcp1 = _manual_item("MCP-1")
-    assert "0인 카운터는 찍히지 않" in mcp1 and "MCP-2로 넘어간다" in mcp1
+    assert "`pktmon counters`로 세는 방법은 쓰지 않는다" in mcp1
     assert "Start-Sleep -Seconds 100" in _manual_item("MCP-6")
     assert "한 글자 `\\`로 읽는다" in _manual_item("MCP-4")
     assert _manual_item("MCP-11").count("보여야 하는 것:") >= 7  # 1번, 3번의 블록 다섯, 4번

@@ -155,7 +155,7 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
 
 결과는 각 항목 아래에 날짜와 함께 적는다.
 
-- [ ] MCP-1 켠 서버만 `list_servers`에 보이고, 켜지 않은 서버와 금지 서버에는 패킷이 가지 않는다.
+- [x] MCP-1 켠 서버만 `list_servers`에 보이고, 켜지 않은 서버와 금지 서버에는 패킷이 가지 않는다.
 
   HQ 창은 닫고 한다(창을 열거나 상태를 새로 고치면 모든 서버의 5985 포트를 확인한다). 금지 IP는 2번의 관리자 PowerShell에만 직접 치고 Claude에게 알리지 않는다.
 
@@ -166,40 +166,43 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
      ```
 
      보여야 하는 것: 준비 4번 `list`의 `켜짐` 서버만 있고 `꺼짐`, `금지`, `쓸 수 없음` 서버는 없다.
-  2. 관리자 권한으로 연 이 PC의 PowerShell에서 두 주소의 패킷을 세기 시작한다. `<꺼진 서버 IP>`는 켜지 않은 서버 하나의 주소다. `pktmon filter list`로 필터 두 개를 확인해도 된다.
+  2. 관리자 권한으로 연 이 PC의 PowerShell에서 패킷을 파일로 받기 시작한다. `<꺼진 서버 IP>`는 켜지 않은 서버 하나, `<켠 서버 IP>`는 켠 서버 하나의 주소다. 금지 서버가 없으면 `never` 줄은 뺀다.
 
      ```powershell
      pktmon filter remove
      pktmon filter add never -i <금지 IP>
      pktmon filter add off -i <꺼진 서버 IP>
-     pktmon start -c -o
+     pktmon filter add on -i <켠 서버 IP>
+     pktmon start -c --pkt-size 128 -f "$env:TEMP\hq-mcp1.etl"
      ```
 
-  3. 아무것도 하지 않고 1분 기다린 뒤 같은 창에서 `pktmon counters`로 기준을 본다.
-
-     보여야 하는 것: 아무 줄도 나오지 않는다(0인 카운터는 찍히지 않는다).
-
-     숫자가 0이 아닌 줄이 있으면 이 PC의 다른 프로그램이 그 주소와 주고받는 것이라 패킷 수로는 판단할 수 없다. `pktmon stop`과 `pktmon filter remove`로 끄고, 그 줄을 주소를 가려 적은 뒤 MCP-2로 넘어간다.
-  4. Claude에게 말한다.
+  3. Claude에게 말한다.
 
      ```text
      list_servers의 모든 target에 hq의 run_query로 Get-Date를 한 번에 실행해 줘.
      ```
 
      보여야 하는 것: 확인 창 없이 결과가 온다.
-  5. 2번의 창에서 센 것을 보고 끈다.
+  4. 결과가 온 뒤 2번의 창에서 받은 것을 글로 바꿔 주소를 찾고 끈다. 금지 서버가 있으면 둘째 줄을 `<금지 IP>`로 한 번 더 실행한다.
 
      ```powershell
-     pktmon counters
      pktmon stop
+     pktmon etl2txt "$env:TEMP\hq-mcp1.etl" -o "$env:TEMP\hq-mcp1.txt"
+     Select-String -Path "$env:TEMP\hq-mcp1.txt" -SimpleMatch '<꺼진 서버 IP>' | ForEach-Object { $_.Line }
+     '켠 서버 줄 수: ' + (Select-String -Path "$env:TEMP\hq-mcp1.txt" -SimpleMatch '<켠 서버 IP>' | Measure-Object).Count
      pktmon filter remove
+     Remove-Item "$env:TEMP\hq-mcp1.etl", "$env:TEMP\hq-mcp1.txt"
      ```
 
-     보여야 하는 것: 숫자가 0이 아닌 줄이 하나도 없으면 통과다. 0인 카운터는 찍히지 않으므로 아무 줄도 없는 것이 통과다.
+     보여야 하는 것: 꺼진 서버(와 금지 서버) 주소가 든 줄이 `패킷 필터`로 시작하는 필터 기록 줄뿐이면 통과다(필터마다 한 줄, 패킷이 아니다). 시각과 포트가 붙은 패킷 줄이 있으면 그 주소로 패킷이 나간 것이다.
 
-  0인 카운터는 기본으로 찍히지 않는다(`pktmon counters help`의 `--zero`). 실제로 아무것도 걸리지 않았을 때 무엇을 찍는지는 이 PC에서 확인하지 못했다.
+     `켠 서버 줄 수`는 0보다 커야 한다. 이 방법이 패킷을 실제로 잡는지 보는 값이라, 0이면 통과로 치지 않는다.
 
-- [ ] MCP-2 켠 서버 3대의 메모리와 디스크 용량이 한 번에 나오고 한글이 깨지지 않는다(2012 R2, 2019). 2012 R2에서 `Write-Host` 출력이 `output`에 오는지도 본다.
+  `pktmon start -c`에 `-o`를 붙여 `pktmon counters`로 세는 방법은 쓰지 않는다. 이 PC에서는 주소 필터를 걸어도 카운터가 모든 패킷을 셌다(2026-11-17, IPv6 줄까지 나왔다).
+
+  2026-11-17 통과. 금지할 서버가 없어 `never`는 쓰지 않았다. 개발·시험 서버 3대(2019 둘, 2012 R2 하나)만 켰고 `list_servers`에 그 3대만 보였다. 세 대의 `Get-Date`가 확인 창 없이 `OK`로 왔다. 받은 파일에서 꺼진 서버 주소가 든 줄은 필터 기록 한 줄(`패킷 필터 1, 이름 off`)뿐이었고 켠 서버 주소는 901줄이었다. 처음 쓴 카운터 방법은 필터를 걸고도 모든 패킷을 세어 위의 방법으로 바꿨다.
+
+- [x] MCP-2 켠 서버 3대의 메모리와 디스크 용량이 한 번에 나오고 한글이 깨지지 않는다(2012 R2, 2019). 2012 R2에서 `Write-Host` 출력이 `output`에 오는지도 본다.
 
   `run_query`에는 확인 창이 뜨지 않아야 한다. 뜨면 거절하고 창에 보인 기능 이름(예: `run_script`)을 적는다.
 
@@ -218,7 +221,9 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
 
      보여야 하는 것: `output`에 `한글 확인`이 있다. 없으면 그렇게 적는다.
 
-- [ ] MCP-3 `run_script`에 확인 창이 호출마다 뜨고, "다시 묻지 않기"가 없다. 거절하면 실행되지 않는다. 20,000자 스크립트와 대상 서버가 잘리지 않고 보인다. 잘리면 4.5의 한도를 보이는 길이로 줄인다.
+  2026-11-17 통과, 찾은 것 하나. 한 번의 호출로 세 대가 확인 창 없이 `OK`였고 한글 열 이름이 깨지지 않았다. `Write-Host '한글 확인'`은 2019 두 대에서 `output`에 왔고, 2012 R2(PowerShell 4.0)에서는 `status`가 `OK`인데 `output`이 비었다(`errors`도 비었다). 같은 서버에서 `Write-Output '한글 확인'`은 깨지지 않고 왔다. PowerShell 5.0보다 낮은 서버에서는 `Write-Host` 출력이 오지 않는다.
+
+- [x] MCP-3 `run_script`에 확인 창이 호출마다 뜨고, "다시 묻지 않기"가 없다. 거절하면 실행되지 않는다. 20,000자 스크립트와 대상 서버가 잘리지 않고 보인다. 잘리면 4.5의 한도를 보이는 길이로 줄인다.
 
   1. Claude에게 말한다. 확인 창의 스크립트가 `Get-Date`인지 보고 허용한다.
 
@@ -260,7 +265,9 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
 
   창에서 잘려 보였으면 보이는 길이를 적는다. 스크립트 한도(스펙 4.5)를 그 길이로 줄인다.
 
-- [ ] MCP-4 `run_query`로 `Remove-Item` 같은 삭제 명령을 보내면 거절되고 서버에 접속하지 않는다. `Format` 줄은 실서버에도 보내지 않는다.
+  2026-11-17 통과. 호출마다 확인 창이 떴고 선택지는 `Yes`, `No` 둘뿐이었다. 거절한 호출 뒤 그 `reason`의 `start` 줄은 1이었다. 19,997자 스크립트(주석 2,221줄과 `Get-Date`)가 창에서 끝까지 보였고 기록의 글자 수도 19997이었다. 긴 한 줄은 창이 줄을 넘겨 `; Write-Output 끝`까지 보여 주었다. 스크립트 한도는 그대로 둔다.
+
+- [x] MCP-4 `run_query`로 `Remove-Item` 같은 삭제 명령을 보내면 거절되고 서버에 접속하지 않는다. `Format` 줄은 실서버에도 보내지 않는다.
 
   스펙 15장 공격 표의 줄(`Format` 줄 포함)은 쓰지 않는다. 없는 파일을 가리키는 아래 한 줄만 보낸다.
 
@@ -277,7 +284,9 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
 
      기록은 JSON이라 `script`의 `\`가 `\\`로 보인다(`C:\\hq-mcp-check-none.txt`). 한 글자 `\`로 읽는다.
 
-- [ ] MCP-5 실행 기록에 스크립트와 결과 상태가 남고 출력은 없다.
+  2026-11-17 통과. 오류 글이 "조회 검사에 걸려 어느 서버에도 접속하지 않았습니다."로 시작했고(`COMMAND`, `Remove-Item`), 기록의 마지막 줄은 `rejected`였다. Claude는 `run_script`로 다시 부르지 않았다.
+
+- [x] MCP-5 실행 기록에 스크립트와 결과 상태가 남고 출력은 없다.
 
   시작 줄(`start`)과 끝 줄(`end`)은 같은 `call` 값으로 짝짓는다. 호출이 겹치면 다른 호출의 줄이 사이에 끼고, 달이 바뀔 때 걸친 호출은 시작 줄이 그달 파일에, 끝 줄이 다음 달 파일에 있다. 그래서 줄 순서나 파일 하나로 짝짓지 않는다.
 
@@ -307,7 +316,9 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
 
      보여야 하는 것: 아무것도 나오지 않는다.
 
-- [ ] MCP-6 MCP 서버와 그 자식 프로세스가 수신 포트를 열지 않는다(AC-10 방식).
+  2026-11-17 통과. 같은 `call`의 `start` 줄(시각, `tool`, `targets`, `script`, `sha256`)과 `end` 줄(`OK`, `exit_code` 0, `seconds`, `output_chars` 8)이 남았고 `hqaudit`는 기록에 없었다.
+
+- [x] MCP-6 MCP 서버와 그 자식 프로세스가 수신 포트를 열지 않는다(AC-10 방식).
 
   1. 2번의 명령을 미리 복사해 둔다. Claude에게 말한다. 확인 창의 스크립트가 부탁한 그대로인지 보고 허용한다. 100초 동안 도는 스크립트라 그동안 자식 PowerShell이 떠 있다.
 
@@ -327,7 +338,9 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
 
      보여야 하는 것: 첫 줄이 `프로세스 3개` 이상(uv, python, powershell)이고 그 아래에 아무것도 없다.
 
-- [ ] MCP-7 AhnLab V3가 실행 템플릿과 조사 스크립트의 실행을 막지 않는다. 막으면 오류가 Claude에게 알아볼 수 있게 간다.
+  2026-11-17 통과. 프로세스 6개였고 수신 포트는 없었다.
+
+- [x] MCP-7 AhnLab V3가 실행 템플릿과 조사 스크립트의 실행을 막지 않는다. 막으면 오류가 Claude에게 알아볼 수 있게 간다.
 
   1. Claude에게 말한다. Claude가 `run_script`로 바꾸면 확인 창의 스크립트가 읽기만 하는지 보고 허용한다.
 
@@ -355,7 +368,9 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
 
      보여야 하는 것: 탭이 접속된다.
 
-- [ ] MCP-8 시간 초과된 호출 뒤 서버에 세션이 남는지 `Get-WSManInstance -ResourceURI shell -Enumerate`로 본다.
+  2026-11-17 1번 통과. 세 가지 조회가 오류 없이 왔다. 2~4번은 하지 않았다(저장된 계정을 건드리지 않기로 했다).
+
+- [x] MCP-8 시간 초과된 호출 뒤 서버에 세션이 남는지 `Get-WSManInstance -ResourceURI shell -Enumerate`로 본다.
 
   120초를 넘기는 호출은 Claude Code가 백그라운드 작업으로 옮기고 Claude는 다음 일을 한다. 결과는 끝난 뒤 완료 알림으로 온다(A-5). 백그라운드 작업은 `/tasks`에서 보고 멈출 수 있다. 1번은 120초 안에 끝나도록 시간 한도를 30초로 준다.
 
@@ -395,7 +410,9 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
 
      "아직 도는 중"이면 조금 뒤 다시 본다. 10분이 지나도 `end` 줄이 없으면 그렇게 적는다.
 
-- [ ] MCP-9 HQ 창이 떠 있는 동안에도 동작하고, AC-1, AC-3, AC-10이 그대로다.
+  2026-11-17 통과. 1번은 32.8초에 `TIMEOUT`이었고, 바로 본 shell은 그 호출 자신 하나뿐이었다. 3번은 120초 뒤 백그라운드 작업이 되었고, 그 작업을 멈추자 `end` 줄이 `CANCELLED`(`exit_code` 22, 277초)였다. 취소가 MCP 서버에 와서 스크립트가 멈춘다. 그 뒤에도 shell은 확인 호출 자신 하나뿐이었다.
+
+- [x] MCP-9 HQ 창이 떠 있는 동안에도 동작하고, AC-1, AC-3, AC-10이 그대로다.
 
   **금지 서버가 HQ 목록에 있으면 이 항목을 하지 않고 `금지 서버가 목록에 있어 건너뜀`이라고 적는다.** HQ 창은 열 때 목록의 모든 서버 포트를 확인한다(준비의 경고). `run_query`에는 확인 창이 뜨지 않아야 한다. 뜨면 거절하고 창에 보인 기능 이름을 적는다.
 
@@ -410,13 +427,17 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
 
      보여야 하는 것: 세 항목이 그 문서대로 통과한다.
 
-- [ ] MCP-10 `C:\dev\hq`에서 시작한 Claude Code 세션에는 `hq` MCP가 없다.
+  2026-11-17 통과(AC-10은 다시 하지 않았다). HQ 창에서 켠 서버의 탭이 5초 안에 열렸고(AC-3), 그 탭을 연 채 `run_query`가 확인 창 없이 `OK`였으며, 바로가기를 다시 눌러도 창은 하나였다(AC-1).
+
+- [x] MCP-10 `C:\dev\hq`에서 시작한 Claude Code 세션에는 `hq` MCP가 없다.
 
   1. 이 PC의 PowerShell에서 `cd C:\dev\hq` 뒤 `claude`로 시작해 `/mcp`를 친다. 본 뒤 `/exit`로 끝낸다.
 
      보여야 하는 것: 목록에 `hq`가 없다.
 
-- [ ] MCP-11 `C:\dev\hq-ops`에서 bypass와 auto 모드로 시작할 수 없고, 읽기 전용 기본 명령 밖의 Bash와 PowerShell 명령은 실행 전에 확인을 받는다. 작업 폴더 밖 파일 읽기는 거부되거나 확인을 받고, Edit 도구로 고치기는 거부된다.
+  2026-11-17 통과. 목록에 `hq`가 없었다.
+
+- [x] MCP-11 `C:\dev\hq-ops`에서 bypass와 auto 모드로 시작할 수 없고, 읽기 전용 기본 명령 밖의 Bash와 PowerShell 명령은 실행 전에 확인을 받는다. 작업 폴더 밖 파일 읽기는 거부되거나 확인을 받고, Edit 도구로 고치기는 거부된다.
 
   사용자 전역 설정에 넓은 허용 규칙이 있으면 묻지 않고 실행된 것이 이 폴더 설정의 동작처럼 보인다. 준비 2번을 먼저 했는지 본다(스펙 13.3).
 
@@ -470,3 +491,5 @@ if ($last) { $last } else { '실행 기록이 아직 없다' }
      Remove-Item "$env:TEMP\hq-ops-outside.txt"
      if (Test-Path C:\dev\hq-ops\check.txt) { Remove-Item C:\dev\hq-ops\check.txt }
      ```
+
+  2026-11-17 통과, 보지 못한 것 하나. bypass와 auto 모드가 나오지 않았고 `--dangerously-skip-permissions`는 보통 모드로 시작했다. PowerShell `New-Item`과 Bash `touch`는 확인 창이 떴다(거절). Read는 `permissions.blockReadsOutsideWorkingDirectories`로 거부됐다. Bash `cat`은 확인 창이 떴고(거절), 그 뒤의 PowerShell `Get-Content`는 이번에 따로 보지 못했다(A-4에서는 창이 떴다). Edit는 `File must be read first`로 거부됐다(Read가 막혀 있어 넘어가지 못한다). 파일은 `outside` 그대로였다.
