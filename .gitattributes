@@ -1,2 +1,4 @@
 # 받은 그대로의 바이트를 지킨다(core.autocrlf=true인 PC에서도 줄 끝을 바꾸지 않는다)
 src/hq/static/vendor/** -text
+# bash 스크립트는 WSL에서 돌므로 줄 끝을 LF로 둔다(CRLF면 bash가 실패한다)
+tools/mcp/*.sh text eol=lf
