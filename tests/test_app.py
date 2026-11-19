@@ -202,7 +202,7 @@ def test_the_window_goes_back_to_the_hq_page_from_anywhere_else(url, caplog):
     assert len(app_warnings(caplog)) == 1
 
 
-KOREAN_INDEX = Path("C:/Users/전호영/AppData/Local/Temp/_MEI12/hq/static/index.html").as_uri()
+KOREAN_INDEX = Path("C:/Users/홍길동/AppData/Local/Temp/_MEI12/hq/static/index.html").as_uri()
 
 
 @pytest.mark.parametrize(("current", "index"), [
@@ -210,7 +210,7 @@ KOREAN_INDEX = Path("C:/Users/전호영/AppData/Local/Temp/_MEI12/hq/static/inde
     (INDEX + "#servers", INDEX),
     ("file:///c:/HQ/static/index.html", INDEX),  # Windows 경로는 대소문자를 가리지 않는다
     # onefile exe는 사용자 폴더 아래 임시 폴더에서 돈다. as_uri()는 한글을 %인코딩하고 WebView2는 풀어서 알려 준다
-    ("file:///C:/Users/전호영/AppData/Local/Temp/_MEI12/hq/static/index.html", KOREAN_INDEX),
+    ("file:///C:/Users/홍길동/AppData/Local/Temp/_MEI12/hq/static/index.html", KOREAN_INDEX),
     (KOREAN_INDEX, KOREAN_INDEX),
     ("file:///C:/my apps/hq/static/index.html", Path("C:/my apps/hq/static/index.html").as_uri()),
 ])

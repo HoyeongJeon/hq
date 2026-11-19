@@ -23,7 +23,7 @@ PARAMS = BootstrapParams(
     host="10.0.1.21",
     username="Administrator",
     nickname="웹01'; Remove-Item C:\\ -Recurse; '",
-    secret_path=r"C:\Users\전호영\AppData\Local\hq\secrets\0123.dpapi",
+    secret_path=r"C:\Users\홍길동\AppData\Local\hq\secrets\0123.dpapi",
 )
 # 한글, ', ", $, 백틱, ;, 줄바꿈, PowerShell이 작은따옴표로 치는 U+2018~U+201B, 이모지(서로게이트 쌍)
 NASTY = "웹01'; Remove-Item C:\\ -Recurse; \"$x`;\n\u2018\u2019\u201a\u201b 🙂"
@@ -100,7 +100,7 @@ def test_values_travel_only_inside_the_json_literal():
     assert script.count(literal) == 1
     assert script.replace(literal, "__HQ_PARAMS__") == bootstrap.template_text()
     assert "Remove-Item C:" not in bootstrap.template_text()
-    assert "전호영" not in script
+    assert "홍길동" not in script
     assert _payload(script) == expected
 
 

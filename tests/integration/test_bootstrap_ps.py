@@ -26,7 +26,7 @@ pytestmark = pytest.mark.integration
 PARAMS = BootstrapParams("10.0.1.21", "Administrator", "웹01", r"C:\no\such\file.dpapi")
 # 값 안의 ':'는 \u003a로 들어간다(준비 신호가 값에서 통째로 나오지 못하게). 그래도 PowerShell이 그대로 읽어야 한다.
 NASTY = "웹01'; Remove-Item C:\\ -Recurse; \"$x`;\n\u2018\u2019\u201a\u201b 🙂 " + READY_MARKER
-KOREAN_PATH = r"C:\Users\전호영\한글 경로\0123.dpapi"
+KOREAN_PATH = r"C:\Users\홍길동\한글 경로\0123.dpapi"
 
 
 def test_powershell_reads_the_json_literal_back():
