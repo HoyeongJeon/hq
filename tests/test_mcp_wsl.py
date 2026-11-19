@@ -27,9 +27,19 @@ def test_the_script_registers_only_in_its_own_folder_and_runs_the_windows_server
 def test_the_script_uses_the_permission_template_and_blocks_the_data_folder_by_its_wsl_path():
     text = SCRIPT.read_text(encoding="utf-8")
     assert "tools/mcp/settings.local.json" in text and ".claude/settings.local.json" in text
-    # 템플릿의 ~/AppData 규칙은 WSL에서 다른 폴더를 가리키므로 /mnt/c 경로로 한 번 더 막는다
-    assert 'f"Read(/{data}/**)"' in text and 'f"Edit(/{data}/**)"' in text
-    assert "LOCALAPPDATA" in text
+    # 템플릿의 ~/AppData 규칙은 WSL에서 다른 폴더를 가리키므로 /mnt/c 경로로 한 번 더 막는다 (wsl_settings.py)
+    assert "tools/mcp/wsl_settings.py" in text and "LOCALAPPDATA" in text
+    assert (ROOT / "tools" / "mcp" / "wsl_settings.py").is_file()
+
+
+def test_read_only_mode_needs_a_folder_and_never_registers_in_the_hq_repository():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert '"--read-only"' in text and "read-only" in text
+    # 설정을 못 고치면 등록하지 않는다: 설정 쓰기가 등록보다 먼저다
+    assert text.index("wsl_settings.py") < text.index("claude mcp add")
+    # HQ를 개발하는 폴더의 Claude는 실서버에 닿으면 안 된다
+    assert "HQ 저장소 안에는 등록하지 않습니다" in text
+    assert text.index("HQ 저장소 안에는 등록하지 않습니다") < text.index("claude mcp add")
 
 
 def test_the_script_holds_no_real_address_and_no_user_folder():
